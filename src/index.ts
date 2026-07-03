@@ -24,9 +24,12 @@ function parseArgs(argv: string[]): { config: Config; prompt?: string; verbose: 
       case "--temperature":
         config.temperature = Number(argv[++i]);
         break;
+      case "--auto":
+        config.permissionMode = "auto";
+        break;
       case "--yolo":
       case "--dangerously-skip-permissions":
-        config.yolo = true;
+        config.permissionMode = "yolo";
         break;
       case "-v":
       case "--verbose":
@@ -42,7 +45,8 @@ Usage:
   lh --model NAME         override model (default: ${defaultConfig.model})
   lh --num-ctx N          context window (default: ${defaultConfig.numCtx})
   lh --temperature T      sampling temperature (default: ${defaultConfig.temperature})
-  lh --yolo               auto-approve mutating tools
+  lh --auto               auto-approve tools, but ask for dangerous bash commands
+  lh --yolo               auto-approve all mutating tools
   lh -v                   verbose (tool output, token usage)`);
         process.exit(0);
     }
@@ -59,15 +63,19 @@ async function main() {
   const ask = (q: string) => new Promise<string>((res) => rl.question(q, res));
 
   const askPermission = async (name: string, _args: Record<string, unknown>, display: string) => {
-    const answer = await ask(c.yellow(`  allow ${display}? [y/N/a(lways)] `));
-    if (answer.trim().toLowerCase() === "a") {
-      config.yolo = true;
+    const answer = (await ask(c.yellow(`  allow ${display}? [y/N/a(lways)/auto] `))).trim().toLowerCase();
+    if (answer === "a") {
+      config.permissionMode = "yolo"; // "always": approve everything from here on
       return true;
     }
-    return answer.trim().toLowerCase() === "y";
+    if (answer === "auto") {
+      config.permissionMode = "auto"; // keep asking for dangerous bash only
+      return true;
+    }
+    return answer === "y";
   };
 
-  if (prompt !== undefined) config.yolo = true; // one-shot mode can't prompt
+  if (prompt !== undefined) config.permissionMode = "yolo"; // one-shot mode can't prompt
 
   const agent = new Agent(config, cwd, render, askPermission);
 
@@ -85,11 +93,16 @@ async function main() {
   }
 
   console.log(c.bold(`localllm-harness`) + c.dim(` — ${config.model} @ ${config.ollamaUrl} (ctx ${config.numCtx})`));
-  console.log(c.dim(`cwd: ${cwd} — type a task, "exit" to quit`));
+  console.log(c.dim(`cwd: ${cwd} — type a task, "/auto" to toggle auto mode, "exit" to quit`));
   for (;;) {
     const input = (await ask(c.bold("\n> "))).trim();
     if (!input) continue;
     if (input === "exit" || input === "quit") break;
+    if (input === "/auto") {
+      config.permissionMode = config.permissionMode === "auto" ? "default" : "auto";
+      console.log(c.dim(`permission mode: ${config.permissionMode}`));
+      continue;
+    }
     try {
       await agent.run(input);
     } catch (err) {

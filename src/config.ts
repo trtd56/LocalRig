@@ -1,3 +1,8 @@
+/** How mutating tool calls get approved:
+ *  "default" asks for every call, "auto" only asks for dangerous bash
+ *  commands (see permissions.ts), "yolo" approves everything. */
+export type PermissionMode = "default" | "auto" | "yolo";
+
 export interface Config {
   ollamaUrl: string;
   model: string;
@@ -7,8 +12,7 @@ export interface Config {
   topP: number;
   topK: number;
   maxIterations: number;
-  /** Auto-approve mutating tools. */
-  yolo: boolean;
+  permissionMode: PermissionMode;
   // ---- Tool output limits ----
   bashMaxChars: number;
   bashTimeoutMs: number;
@@ -29,7 +33,7 @@ export interface Config {
 export const defaultConfig: Config = {
   ollamaUrl: process.env.OLLAMA_HOST ?? "http://localhost:11434",
   model: process.env.LH_MODEL ?? "qwen36-27b-mtp:latest",
-  numCtx: Number(process.env.LH_NUM_CTX ?? 65536),
+  numCtx: Number(process.env.LH_NUM_CTX ?? 32768),
   numPredict: 16384,
   // Qwen3.6 thinking-mode coding recommendation (HF model card): 0.6 / 0.95 / 20.
   // Lower temperatures cause repetition loops when thinking is enabled.
@@ -37,7 +41,7 @@ export const defaultConfig: Config = {
   topP: 0.95,
   topK: 20,
   maxIterations: 60,
-  yolo: false,
+  permissionMode: "default",
   bashMaxChars: 30_000,
   bashTimeoutMs: 120_000,
   readMaxLines: 2000,

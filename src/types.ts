@@ -51,7 +51,7 @@ export interface ToolDef {
   parameters: JsonSchema;
   /** Execute the tool. Must never throw — return ok:false instead. */
   execute(args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
-  /** Whether this tool mutates state (asks permission unless --yolo). */
+  /** Whether this tool mutates state (asks permission depending on permissionMode). */
   mutating: boolean;
 }
 

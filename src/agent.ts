@@ -7,6 +7,7 @@ import { resolveToolCall, type ResolvedCall } from "./toolcall/validate.ts";
 import { parseFallbackToolCalls } from "./toolcall/fallback.ts";
 import { LoopDetector } from "./toolcall/loopdetect.ts";
 import { ContextManager } from "./context/manager.ts";
+import { canAutoApprove } from "./permissions.ts";
 
 export type PermissionFn = (
   name: string,
@@ -201,7 +202,7 @@ export class Agent {
     const display = tool.name + " " + summarizeArgs(args);
     this.loopDetector.noteCall(tool.name, args);
 
-    if (tool.mutating && !this.config.yolo) {
+    if (tool.mutating && !canAutoApprove(this.config.permissionMode, tool.name, args)) {
       const approved = await this.askPermission(tool.name, args, display);
       if (!approved) {
         return { ok: false, output: "[denied] The user declined this action. Ask them how to proceed or try a different approach." };

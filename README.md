@@ -14,16 +14,17 @@ Ollama 上のローカル LLM(既定: Qwen 3.6 27B MTP)を Claude Code 級のコ
 ```sh
 bun run src/index.ts                 # 対話 REPL
 bun run src/index.ts -p "タスク"      # ワンショット実行(ツール自動承認)
-bun run src/index.ts --model qwen36-27b-mtp:latest --num-ctx 65536 -v
+bun run src/index.ts --model qwen36-27b-mtp:latest --num-ctx 32768 -v
 ```
 
 | フラグ | 意味 |
 |---|---|
 | `-p "..."` | ワンショットモード(CI/スクリプト向け) |
 | `--model NAME` | モデル上書き(env: `LH_MODEL`) |
-| `--num-ctx N` | コンテキスト窓(env: `LH_NUM_CTX`、既定 65536) |
+| `--num-ctx N` | コンテキスト窓(env: `LH_NUM_CTX`、既定 32768) |
 | `--temperature T` | 既定 0.6(Qwen3.6 thinking 推奨値) |
-| `--yolo` | mutating ツールを自動承認 |
+| `--auto` | 危険な bash コマンドのみ確認し、他の mutating ツールは自動承認(REPL では `/auto` でトグル) |
+| `--yolo` | 全 mutating ツールを自動承認 |
 | `-v` | 詳細表示(ツール出力・トークン使用量) |
 
 ## 主な強化ポイント
@@ -44,3 +45,21 @@ bun run eval/run.ts --agent claude   # Claude Code (sonnet) ベースライン
 ```
 
 評価は fixture を一時ディレクトリへコピーして実行し、タスク付属のテストで自動判定する(テストファイル改ざんはハッシュ比較で検出)。結果は `eval/results/` に保存。
+
+### 評価タスク
+
+Claude Code が日常的にこなす処理を能力軸ごとに分けてカバーする。
+
+| タスク | 検証する能力 |
+|---|---|
+| `fix-bug` | 失敗テストからのバグ特定・修正 |
+| `add-feature` | 既存コードへの仕様追加(テスト駆動) |
+| `refactor` | 重複ロジックのモジュール抽出 |
+| `hard-multi` | 複数バグ修正+新規モジュール実装の複合タスク |
+| `explore-codebase` | コードベース探索・質問応答(grep/glob/read、読み取り専用) |
+| `debug-runtime` | コマンド実行→スタックトレースからの実行時エラー診断 |
+| `api-migration` | 非推奨APIの横断的な移行+旧モジュール削除 |
+| `git-workflow` | git init/commit を含む bash 運用ワークフロー |
+| `follow-conventions` | CLAUDE.md のプロジェクト規約を読んで遵守した実装 |
+
+各タスクの合否は `test/verify.sh`(ハッシュ保護下)が判定する。テストが通るだけでは不十分なタスクもある — 例えば `follow-conventions` は規約違反(素の `Error` を throw、`// why:` コメント欠落)を grep で検出し、`debug-runtime` は入力データの改ざんをハッシュで拒否する。
