@@ -70,7 +70,12 @@ export class OllamaClient {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal,
-    });
+      // Bun's fetch aborts after 300s of socket idle time ("The operation
+      // timed out"). Ollama buffers a tool call until its JSON is fully
+      // parsed, so generating one large write call can exceed that in
+      // silence. Undocumented Bun extension; verified on Bun 1.2.21.
+      timeout: false,
+    } as RequestInit);
     if (!res.ok || !res.body) {
       const text = await res.text().catch(() => "");
       throw new Error(`Ollama HTTP ${res.status}: ${text.slice(0, 500)}`);
@@ -152,7 +157,10 @@ export class OllamaClient {
         messages: messages.map(wireMessage),
       }),
       signal,
-    });
+      // stream:false means zero bytes until generation finishes — always
+      // "idle" from Bun's 300s-timeout perspective (see chat() above).
+      timeout: false,
+    } as RequestInit);
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       throw new Error(`Ollama HTTP ${res.status}: ${text.slice(0, 500)}`);
