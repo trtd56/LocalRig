@@ -1,0 +1,23 @@
+{
+  "name": "localllm-harness",
+  "version": "0.1.0",
+  "description": "Coding agent harness for local LLMs (Qwen 3.6 27B via Ollama) with hardened tool-use and context management",
+  "type": "module",
+  "bin": {
+    "lh": "./src/index.ts"
+  },
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "test": "bun test test/",
+    "eval": "bun run eval/run.ts"
+  },
+  "engines": {
+    "bun": ">=1.2.0",
+    "node": ">=24.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "bun-types": "^1.3.14",
+    "typescript": "^6.0.3"
+  }
+}

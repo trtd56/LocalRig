@@ -1,0 +1,4 @@
+# Scope test discovery to the harness's own tests; eval/tasks fixtures contain
+# intentionally-failing tests that agents must fix during evaluation runs.
+[test]
+root = "test"
