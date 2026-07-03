@@ -105,6 +105,17 @@ export interface ChatResponse {
   truncated: boolean;
 }
 
+// ---------- Run outcome ----------
+
+/** Why a run() call ended. Used for CLI exit codes and session records. */
+export type RunStatus =
+  | "ok"
+  | "max_iterations"
+  | "loop_abort"
+  | "interrupted"
+  | "empty"
+  | "error";
+
 // ---------- Events the agent loop emits to the UI ----------
 
 export type AgentEvent =
@@ -118,4 +129,4 @@ export type AgentEvent =
   | { type: "prune"; freedTokens: number }
   | { type: "compact"; beforeTokens: number; afterTokens: number }
   | { type: "status"; message: string }
-  | { type: "usage"; promptTokens: number; ctxPercent: number };
+  | { type: "usage"; promptTokens: number; evalTokens: number; ctxPercent: number };

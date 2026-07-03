@@ -9,23 +9,60 @@ Ollama 上のローカル LLM(既定: Qwen 3.6 27B MTP)を Claude Code 級のコ
 - [Bun](https://bun.sh) ≥ 1.2(または Node.js ≥ 24)
 - [Ollama](https://ollama.com)(モデル: `qwen36-27b-mtp:latest` など tools 対応モデル)
 
+## インストール
+
+```sh
+bun install
+bun link        # `lh` コマンドをグローバルに登録
+```
+
 ## 使い方
 
 ```sh
-bun run src/index.ts                 # 対話 REPL
-bun run src/index.ts -p "タスク"      # ワンショット実行(ツール自動承認)
-bun run src/index.ts --model qwen36-27b-mtp:latest --num-ctx 32768 -v
+lh                        # 対話 REPL
+lh -p "タスク"             # ワンショット実行(進捗→stderr、最終回答→stdout)
+echo "タスク" | lh -p -    # stdin からプロンプトを渡す
+lh -p "タスク" --json      # 機械向け: JSON 1行を stdout に出力(下記参照)
 ```
 
 | フラグ | 意味 |
 |---|---|
-| `-p "..."` | ワンショットモード(CI/スクリプト向け) |
+| `-p "..."` | ワンショットモード(CI/スクリプト/エージェント向け)。`-p -` で stdin から読む |
+| `--json` | 結果を JSON で出力し進捗を抑制(`-v` 併用で stderr に進捗) |
+| `--quiet` | stderr への進捗表示を抑制 |
+| `--cwd DIR` | 実行ディレクトリ指定 |
 | `--model NAME` | モデル上書き(env: `LH_MODEL`) |
 | `--num-ctx N` | コンテキスト窓(env: `LH_NUM_CTX`、既定 32768) |
 | `--temperature T` | 既定 0.6(Qwen3.6 thinking 推奨値) |
-| `--auto` | 危険な bash コマンドのみ確認し、他の mutating ツールは自動承認(REPL では `/auto` でトグル) |
-| `--yolo` | 全 mutating ツールを自動承認 |
+| `--max-iterations N` | エージェントループ上限(既定 60) |
+| `--auto` | 危険な bash コマンドのみ確認、他は自動承認(ワンショットでは確認できないため**拒否**になる。REPL では `/auto` でトグル) |
+| `--yolo` | 全 mutating ツールを自動承認(ワンショットの既定) |
 | `-v` | 詳細表示(ツール出力・トークン使用量) |
+
+終了コード: `0` = 完了、`1` = 途中終了(ループ検出・上限到達・エラー)、`130` = 割り込み。
+
+## Claude Code / Codex からの委譲とフィードバック
+
+上位エージェント(Claude Code / Codex)が簡単なタスクをローカル LLM に投げてトークンを節約するための仕組み。ワンショット実行は毎回 `~/.localllm-harness/sessions/` にセッションとして記録され、呼び出し側が検証後に採点を返せる。
+
+```sh
+lh -p "src/foo.ts の null チェック漏れを修正。bun test test/foo.test.ts が通ること" --json --cwd /path/to/repo
+# → {"session_id":"20260703-141530-a1b2","status":"ok","result":"...","tokens":{...},"feedback_command":"lh feedback 20260703-141530-a1b2 <pass|fail> ..."}
+
+# 呼び出し側が diff とテストで検証したあと採点(必須のプロトコル):
+lh feedback 20260703-141530-a1b2 pass --source claude-code --notes "tests pass"
+lh feedback 20260703-141530-a1b2 fail --source claude-code --notes "別ファイルを編集していた"
+
+lh sessions        # 最近のセッション一覧(採点状況つき)
+lh stats           # 委譲の合格率と直近の失敗ノート(委譲判断の較正に使う)
+```
+
+エージェント側の設定はコピーするだけ(詳細な手順・権限設定・トラブルシューティングは [integrations/SETUP.md](./integrations/SETUP.md)):
+
+- **Claude Code**: `cp -r integrations/claude-code/delegate-local ~/.claude/skills/` — 委譲基準・検証・フィードバック必須のプロトコルを定義したスキル
+- **Codex**: `integrations/codex/AGENTS-snippet.md` の内容を `~/.codex/AGENTS.md` に追記
+
+データ置き場は env `LH_HOME` で変更可能(既定 `~/.localllm-harness`)。
 
 ## 主な強化ポイント
 

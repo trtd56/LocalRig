@@ -1,5 +1,5 @@
 import type { Config } from "./config.ts";
-import type { AgentEvent, ChatMessage, ToolContext, ToolDef, ToolResult } from "./types.ts";
+import type { AgentEvent, ChatMessage, RunStatus, ToolContext, ToolDef, ToolResult } from "./types.ts";
 import { OllamaClient } from "./provider/ollama.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
 import { createTools, renderTodos } from "./tools/registry.ts";
@@ -25,6 +25,8 @@ export class Agent {
   private seq = 0;
   private lastTodoRender = "";
   private abort = new AbortController();
+  /** Why the most recent run() ended. Valid after run() resolves. */
+  lastRunStatus: RunStatus = "ok";
 
   constructor(
     private config: Config,
@@ -62,6 +64,7 @@ export class Agent {
 
   /** Run one user request to completion. Returns the final assistant text. */
   async run(userInput: string): Promise<string> {
+    this.lastRunStatus = "error"; // overwritten on every graceful exit path
     this.push({ role: "user", content: userInput });
     this.loopDetector.reset();
 
@@ -96,7 +99,10 @@ export class Agent {
           this.abort.signal,
         );
       } catch (err) {
-        if (this.abort.signal.aborted) return "[interrupted]";
+        if (this.abort.signal.aborted) {
+          this.lastRunStatus = "interrupted";
+          return "[interrupted]";
+        }
         throw err;
       }
       this.onEvent({ type: "turn_end" });
@@ -107,10 +113,14 @@ export class Agent {
       this.onEvent({
         type: "usage",
         promptTokens: response.promptTokens,
+        evalTokens: response.evalTokens,
         ctxPercent: Math.round((100 * (response.promptTokens + response.evalTokens)) / this.config.numCtx),
       });
 
-      if (wrapUp) return msg.content || "[stopped: reached max iterations]";
+      if (wrapUp) {
+        this.lastRunStatus = "max_iterations";
+        return msg.content || "[stopped: reached max iterations]";
+      }
 
       // Fallback: some turns emit tool calls as text instead of native calls.
       let calls = msg.tool_calls ?? [];
@@ -146,8 +156,10 @@ export class Agent {
             });
             continue;
           }
+          this.lastRunStatus = "empty";
           return "[the model produced no output]";
         }
+        this.lastRunStatus = "ok";
         return msg.content; // final answer
       }
 
@@ -187,6 +199,7 @@ export class Agent {
       const loopMsg = this.loopDetector.check();
       if (loopMsg?.abort) {
         this.onEvent({ type: "loop_warning", message: loopMsg.message });
+        this.lastRunStatus = "loop_abort";
         return `[aborted: ${loopMsg.message}]`;
       }
       if (loopMsg) {
@@ -194,6 +207,7 @@ export class Agent {
         this.push({ role: "user", content: `[system] ${loopMsg.message}` });
       }
     }
+    this.lastRunStatus = "max_iterations";
     return "[stopped: reached max iterations]";
   }
 

@@ -14,14 +14,18 @@ export { c };
 
 /**
  * Streams agent events to the terminal. Thinking is dimmed, tool calls are
- * one-liners, tool output is shown truncated.
+ * one-liners, tool output is shown truncated. `out` defaults to stdout;
+ * one-shot mode passes stderr so stdout carries only the final answer.
  */
-export function createRenderer(verbose: boolean): (e: AgentEvent) => void {
+export function createRenderer(
+  verbose: boolean,
+  out: { write(s: string): void } = process.stdout,
+): (e: AgentEvent) => void {
   let mode: "idle" | "thinking" | "content" = "idle";
 
   const ensureNewline = () => {
     if (mode !== "idle") {
-      process.stdout.write("\n");
+      out.write("\n");
       mode = "idle";
     }
   };
@@ -31,60 +35,60 @@ export function createRenderer(verbose: boolean): (e: AgentEvent) => void {
       case "thinking_delta":
         if (mode !== "thinking") {
           ensureNewline();
-          process.stdout.write(c.dim("· thinking: "));
+          out.write(c.dim("· thinking: "));
           mode = "thinking";
         }
-        process.stdout.write(c.dim(e.text.replace(/\n+/g, " ")));
+        out.write(c.dim(e.text.replace(/\n+/g, " ")));
         break;
       case "content_delta":
         if (mode !== "content") {
           ensureNewline();
           mode = "content";
         }
-        process.stdout.write(e.text);
+        out.write(e.text);
         break;
       case "turn_end":
         ensureNewline();
         break;
       case "tool_start":
         ensureNewline();
-        process.stdout.write(c.cyan(`⏺ ${e.display}`) + "\n");
+        out.write(c.cyan(`⏺ ${e.display}`) + "\n");
         break;
       case "tool_end": {
         const head = e.result.display ?? firstLine(e.result.output);
         const mark = e.result.ok ? c.green("  ⎿ ") : c.red("  ⎿ ✗ ");
-        process.stdout.write(mark + c.dim(truncate(head, 120)) + "\n");
+        out.write(mark + c.dim(truncate(head, 120)) + "\n");
         if (verbose && e.result.output.length > 120) {
-          process.stdout.write(c.dim(indent(truncate(e.result.output, 2000), "    ")) + "\n");
+          out.write(c.dim(indent(truncate(e.result.output, 2000), "    ")) + "\n");
         }
         break;
       }
       case "repair":
         ensureNewline();
-        process.stdout.write(c.yellow(`  ⚠ tool-call repair: ${truncate(e.problem, 160)}`) + "\n");
+        out.write(c.yellow(`  ⚠ tool-call repair: ${truncate(e.problem, 160)}`) + "\n");
         break;
       case "loop_warning":
         ensureNewline();
-        process.stdout.write(c.yellow(`  ⚠ ${e.message}`) + "\n");
+        out.write(c.yellow(`  ⚠ ${e.message}`) + "\n");
         break;
       case "prune":
         ensureNewline();
-        process.stdout.write(c.dim(`· pruned old tool output (~${e.freedTokens} tokens freed)`) + "\n");
+        out.write(c.dim(`· pruned old tool output (~${e.freedTokens} tokens freed)`) + "\n");
         break;
       case "compact":
         ensureNewline();
-        process.stdout.write(
+        out.write(
           c.dim(`· compacted context: ~${e.beforeTokens} → ~${e.afterTokens} tokens`) + "\n",
         );
         break;
       case "status":
         ensureNewline();
-        process.stdout.write(c.dim(`· ${e.message}`) + "\n");
+        out.write(c.dim(`· ${e.message}`) + "\n");
         break;
       case "usage":
         if (verbose) {
           ensureNewline();
-          process.stdout.write(c.dim(`· ctx: ${e.promptTokens} prompt tokens (${e.ctxPercent}%)`) + "\n");
+          out.write(c.dim(`· ctx: ${e.promptTokens} prompt tokens (${e.ctxPercent}%)`) + "\n");
         }
         break;
     }
