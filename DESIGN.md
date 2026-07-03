@@ -1,4 +1,4 @@
-# localllm-harness 設計ドキュメント
+# LocalRig 設計ドキュメント
 
 Qwen 3.6 27B (MTP, Ollama) 向けコーディングエージェントハーネス。
 目標: Claude Code (Sonnet) と同等のコーディングタスク遂行能力。

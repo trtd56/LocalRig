@@ -1,12 +1,12 @@
 # Codex integration
 
-Paste the section below into your global `~/.codex/AGENTS.md` (or a project `AGENTS.md`) to let Codex delegate small tasks to the local LLM harness and report feedback autonomously.
+Paste the section below into your global `~/.codex/AGENTS.md` (or a project `AGENTS.md`) to let Codex delegate small tasks to LocalRig and report feedback autonomously.
 
 ---
 
 ## Delegating small tasks to the local LLM (`lh`)
 
-A local coding agent is available as the `lh` CLI (Qwen 3.6 27B via Ollama). Its tokens are free; use it for mechanical, verifiable tasks to conserve your own context: single-file bugfixes with a failing test, boilerplate, renames, tests that mirror an existing pattern, doc updates.
+LocalRig is available as the `lh` CLI (Qwen 3.6 27B via Ollama). Its tokens are free; use it for mechanical, verifiable tasks to conserve your own context: single-file bugfixes with a failing test, boilerplate, renames, tests that mirror an existing pattern, doc updates.
 
 Rules:
 

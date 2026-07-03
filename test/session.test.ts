@@ -18,7 +18,7 @@ import {
 let tmpHome: string;
 
 beforeEach(() => {
-  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "lh-test-"));
+  tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "localrig-test-"));
   process.env.LH_HOME = tmpHome;
 });
 

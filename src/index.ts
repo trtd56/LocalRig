@@ -16,9 +16,11 @@ import {
   saveSession,
 } from "./session.ts";
 
-const HELP = `localllm-harness — coding agent for local LLMs via Ollama
+const HELP = `LocalRig — coding agent for local LLMs via Ollama
 
 Usage:
+  localrig                  interactive REPL
+  localrig -p "task"        one-shot: progress → stderr, final answer → stdout
   lh                        interactive REPL
   lh -p "task"              one-shot: progress → stderr, final answer → stdout
   echo "task" | lh -p -     one-shot, prompt from stdin
@@ -299,7 +301,7 @@ async function runRepl(opts: CliOptions): Promise<void> {
     process.stdout.write("\n" + c.yellow("[interrupted]") + "\n");
   });
 
-  console.log(c.bold(`localllm-harness`) + c.dim(` — ${config.model} @ ${config.ollamaUrl} (ctx ${config.numCtx})`));
+  console.log(c.bold(`LocalRig`) + c.dim(` — ${config.model} @ ${config.ollamaUrl} (ctx ${config.numCtx})`));
   console.log(c.dim(`cwd: ${cwd} — type a task, "/auto" to toggle auto mode, "exit" to quit`));
   for (;;) {
     const input = (await ask(c.bold("\n> "))).trim();

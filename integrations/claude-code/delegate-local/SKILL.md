@@ -1,11 +1,11 @@
 ---
 name: delegate-local
-description: Delegate small, mechanical, verifiable coding tasks to a local LLM via the `lh` CLI to save tokens. Use when a task is well-scoped (single-file fix, boilerplate, rename, small test, doc tweak) and its success is objectively checkable (tests, grep, diff). After every delegation you MUST verify the result yourself and record a verdict with `lh feedback`.
+description: Delegate small, mechanical, verifiable coding tasks to LocalRig via the `lh` CLI to save tokens. Use when a task is well-scoped (single-file fix, boilerplate, rename, small test, doc tweak) and its success is objectively checkable (tests, grep, diff). After every delegation you MUST verify the result yourself and record a verdict with `lh feedback`.
 ---
 
 # Delegate to a local LLM (`lh`)
 
-`lh` runs a local coding agent (Qwen 3.6 27B via Ollama) that can read/edit/write files and run bash in a target directory. It is slower than you (minutes, not seconds) and weaker on ambiguity, but its tokens are free. Delegating mechanical work to it saves your context budget for the hard parts.
+`lh` runs LocalRig, a local coding agent (Qwen 3.6 27B via Ollama) that can read/edit/write files and run bash in a target directory. It is slower than you (minutes, not seconds) and weaker on ambiguity, but its tokens are free. Delegating mechanical work to it saves your context budget for the hard parts.
 
 ## When to delegate
 

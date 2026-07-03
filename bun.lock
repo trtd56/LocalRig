@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "localllm-harness",
+      "name": "localrig",
       "devDependencies": {
         "@types/node": "^26.1.0",
         "bun-types": "^1.3.14",

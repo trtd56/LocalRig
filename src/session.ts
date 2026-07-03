@@ -2,7 +2,7 @@
 // lets an orchestrating agent (Claude Code / Codex) grade a delegated run
 // after verifying it, and lets `lh stats` report how delegation is going.
 //
-// Layout under $LH_HOME (default ~/.localllm-harness):
+// Layout under $LH_HOME (default ~/.localrig):
 //   sessions/<id>.json   one record per one-shot run, full transcript included
 //   feedback.jsonl       append-only verdicts keyed by session id
 
@@ -45,7 +45,7 @@ export interface FeedbackRecord {
 }
 
 export function dataDir(): string {
-  return process.env.LH_HOME ?? path.join(os.homedir(), ".localllm-harness");
+  return process.env.LH_HOME ?? path.join(os.homedir(), ".localrig");
 }
 
 const sessionsDir = () => path.join(dataDir(), "sessions");
