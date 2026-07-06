@@ -48,6 +48,9 @@ export interface SessionRecord {
   pid?: number;
   /** Full message transcript for post-hoc debugging. */
   messages?: readonly ChatMessage[];
+  /** For sessions started with `--resume`: the id of the session whose saved
+   *  transcript was restored to seed this one. */
+  resumedFrom?: string;
 }
 
 export interface FeedbackRecord {
@@ -107,6 +110,42 @@ export function listSessionIds(): string[] {
 export function latestSessionId(): string | null {
   const ids = listSessionIds();
   return ids.length > 0 ? ids[ids.length - 1]! : null;
+}
+
+/** Raised when a `--resume` target can't be replayed. `kind` maps to the
+ *  ErrorKind bucket so a caller can branch without parsing the message. */
+export class ResumeError extends Error {
+  readonly kind: ErrorKind = "config";
+  constructor(message: string) {
+    super(message);
+    this.name = "ResumeError";
+  }
+}
+
+/**
+ * Rebuild the message transcript for `lh --resume` from a saved session. Pure:
+ * the caller does the I/O of loading `record` (pass the id too, only for error
+ * messages). Throws ResumeError with a clear, config-kind message when the id
+ * is unknown or the record carries no replayable transcript.
+ *
+ * _seq is re-stamped densely (0..n-1) so the agent's counter can resume past
+ * the restored messages without colliding: compaction mints _seq in the
+ * billions, so seeding from a naive max would strand the counter up there.
+ * Messages are shallow-copied so mutations by the resumed run don't touch the
+ * caller's record.
+ */
+export function restoreTranscript(id: string, record: SessionRecord | null): ChatMessage[] {
+  if (!record) {
+    throw new ResumeError(`unknown session: ${id} (see \`lh sessions\`)`);
+  }
+  const messages = record.messages;
+  if (!messages || messages.length === 0) {
+    throw new ResumeError(`session ${id} has no saved transcript to resume`);
+  }
+  if (messages[0]!.role !== "system") {
+    throw new ResumeError(`session ${id} transcript does not start with a system prompt`);
+  }
+  return messages.map((m, i) => ({ ...m, _seq: i }));
 }
 
 export function appendFeedback(fb: FeedbackRecord): void {

@@ -6,7 +6,7 @@ import { Agent } from "./agent.ts";
 import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
 import { defaultConfig, type Config } from "./config.ts";
 import { createRenderer, c } from "./ui/render.ts";
-import type { AgentEvent, ErrorKind, RunStatus } from "./types.ts";
+import type { AgentEvent, ChatMessage, ErrorKind, RunStatus } from "./types.ts";
 import {
   appendFeedback,
   type CheckRecord,
@@ -16,6 +16,8 @@ import {
   loadSession,
   newSessionId,
   readFeedback,
+  ResumeError,
+  restoreTranscript,
   saveSession,
   type SessionRecord,
 } from "./session.ts";
@@ -28,6 +30,9 @@ Usage:
   lh                        interactive REPL
   lh -p "task"              one-shot: progress → stderr, final answer → stdout
   echo "task" | lh -p -     one-shot, prompt from stdin
+  lh -p "follow-up" --resume <id> --json
+                            one-shot: restore a saved session's transcript and
+                            continue with "follow-up" as the next instruction
   lh submit -p "task" --json
                             start a detached one-shot and return immediately
   lh wait <id> [--timeout 1200] [--json]
@@ -58,6 +63,10 @@ One-shot flags:
   --check-retries N         repair attempts after a failing check (default: 2)
   --kind KIND               tag this delegation (recommended: rename, tests,
                             docs, types, perf, bugfix, other)
+  --resume ID               continue a saved session (one-shot only): restore
+                            its transcript, append the prompt as a follow-up,
+                            and resume the agent loop. Records resumed_from and
+                            defaults --cwd to the original session's directory
   --auto                    deny dangerous bash instead of the default
                             approve-everything (one-shot cannot prompt)
   --yolo                    approve all mutating tools (one-shot default)
@@ -77,6 +86,7 @@ interface CliOptions {
   checkRetries: number;
   kind?: string;
   sessionId?: string;
+  resumeFrom?: string;
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -137,6 +147,9 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--session-id":
         opts.sessionId = argv[++i];
+        break;
+      case "--resume":
+        opts.resumeFrom = argv[++i];
         break;
       case "--json":
         opts.json = true;
@@ -297,11 +310,29 @@ function sessionForJson(record: SessionRecord) {
     model: record.model,
     cwd: record.cwd,
     kind: record.kind,
+    resumed_from: record.resumedFrom,
     pid: record.pid,
     check: record.check,
     report: reportForJson(record),
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<verified how / what went wrong>"`,
   };
+}
+
+/**
+ * A `--resume` target could not be replayed (unknown id / no transcript). Emit
+ * a clear error before any session is minted — no phantom record is saved — and
+ * exit 1. JSON callers get { status, error, error_kind } so they can branch on
+ * error_kind ("config" for a bad id) without parsing the message.
+ */
+function failResume(opts: CliOptions, err: unknown): never {
+  const message = err instanceof Error ? err.message : String(err);
+  const errorKind: ErrorKind = err instanceof ResumeError ? err.kind : "internal";
+  if (opts.json) {
+    console.log(JSON.stringify({ status: "error", error: message, error_kind: errorKind }));
+  } else {
+    process.stderr.write(c.red(`error: ${message}`) + "\n");
+  }
+  process.exit(1);
 }
 
 function statusExitCode(status: RunStatus): number {
@@ -312,7 +343,25 @@ function statusExitCode(status: RunStatus): number {
 
 async function runOneShot(opts: CliOptions): Promise<never> {
   const { config } = opts;
-  const cwd = path.resolve(opts.cwd ?? process.cwd());
+
+  // --resume: restore a saved session's transcript to seed this run. Replay in
+  // the original session's cwd (so file paths in the transcript still resolve)
+  // unless the caller overrode --cwd.
+  let restored: ChatMessage[] | undefined;
+  let resumedFrom: string | undefined;
+  let baseCwd = opts.cwd;
+  if (opts.resumeFrom !== undefined) {
+    const original = loadSession(opts.resumeFrom);
+    try {
+      restored = restoreTranscript(opts.resumeFrom, original);
+    } catch (err) {
+      return failResume(opts, err);
+    }
+    resumedFrom = opts.resumeFrom;
+    baseCwd = opts.cwd ?? original!.cwd;
+  }
+
+  const cwd = path.resolve(baseCwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
   const checkRetries = Number.isFinite(opts.checkRetries) && opts.checkRetries >= 0 ? Math.floor(opts.checkRetries) : 2;
   const originalMaxTimeMs = config.maxTimeMs;
@@ -338,6 +387,7 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   };
 
   const agent = new Agent(config, cwd, onEvent, denyPermission);
+  if (restored) agent.restore(restored);
   process.on("SIGINT", () => {
     agent.interrupt();
     process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
@@ -404,6 +454,7 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     check,
     report: agent.getReport(),
     messages: agent.getMessages(),
+    resumedFrom,
   };
   saveSession(record);
 
@@ -430,6 +481,10 @@ async function cmdSubmit(argv: string[]): Promise<number> {
   if (opts.prompt === "-") opts.prompt = await readStdin();
   if (opts.prompt === undefined || !opts.prompt.trim()) {
     console.error("usage: lh submit -p <task> [--json] [--check COMMAND]");
+    return 1;
+  }
+  if (opts.resumeFrom !== undefined) {
+    console.error("error: submit does not support --resume; use `lh -p <follow-up> --resume <id>`");
     return 1;
   }
 
@@ -657,6 +712,13 @@ async function main() {
   if (opts.prompt === "-") opts.prompt = await readStdin();
   if (opts.prompt !== undefined && !opts.prompt.trim()) {
     console.error("error: empty prompt");
+    process.exit(1);
+  }
+
+  // --resume is one-shot only: it needs a follow-up prompt to append, and the
+  // REPL has no session to resume into.
+  if (opts.resumeFrom !== undefined && opts.prompt === undefined) {
+    console.error("error: --resume requires a prompt (-p); it is one-shot only and not available in the REPL");
     process.exit(1);
   }
 

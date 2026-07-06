@@ -87,6 +87,18 @@ export class Agent {
     this.toolCtx.signal = this.abort.signal;
   }
 
+  /**
+   * Seed the agent with a transcript restored from a saved session (for
+   * `lh --resume`), replacing the fresh system prompt with the saved
+   * conversation. Expects messages already re-stamped densely by
+   * restoreTranscript; the seq counter continues past them so subsequently
+   * pushed messages stay ordered.
+   */
+  restore(messages: ChatMessage[]): void {
+    this.messages = messages;
+    this.seq = messages.length;
+  }
+
   private stamp(m: ChatMessage): ChatMessage {
     m._seq = this.seq++;
     return m;

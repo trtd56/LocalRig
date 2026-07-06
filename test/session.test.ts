@@ -11,9 +11,12 @@ import {
   loadSession,
   newSessionId,
   readFeedback,
+  restoreTranscript,
+  ResumeError,
   saveSession,
   type SessionRecord,
 } from "../src/session.ts";
+import type { ChatMessage } from "../src/types.ts";
 
 let tmpHome: string;
 
@@ -70,6 +73,12 @@ describe("session store", () => {
     expect(loadSession("nope")).toBeNull();
   });
 
+  test("resumedFrom survives the save/load roundtrip", () => {
+    const rec = makeRecord("20260703-120000-cccc", { resumedFrom: "20260703-100000-aaaa" });
+    saveSession(rec);
+    expect(loadSession(rec.id)!.resumedFrom).toBe("20260703-100000-aaaa");
+  });
+
   test("listSessionIds sorts oldest first; latestSessionId picks newest", () => {
     saveSession(makeRecord("20260703-110000-bbbb"));
     saveSession(makeRecord("20260703-100000-aaaa"));
@@ -80,6 +89,66 @@ describe("session store", () => {
   test("empty store", () => {
     expect(listSessionIds()).toEqual([]);
     expect(latestSessionId()).toBeNull();
+  });
+});
+
+describe("restoreTranscript", () => {
+  const transcript: ChatMessage[] = [
+    { role: "system", content: "you are an agent", _seq: 0 },
+    { role: "user", content: "create hello.txt", _seq: 1 },
+    { role: "assistant", content: "", _seq: 2, tool_calls: [{ function: { name: "write", arguments: { path: "hello.txt" } } }] },
+    { role: "tool", content: "wrote hello.txt", tool_name: "write", _seq: 3 },
+    { role: "assistant", content: "done", _seq: 4 },
+  ];
+
+  test("returns the saved messages, preserving roles and content", () => {
+    const rec = makeRecord("s1", { messages: transcript });
+    const out = restoreTranscript("s1", rec);
+    expect(out).toHaveLength(5);
+    expect(out.map((m) => m.role)).toEqual(["system", "user", "assistant", "tool", "assistant"]);
+    expect(out[4]!.content).toBe("done");
+    expect(out[2]!.tool_calls).toEqual(transcript[2]!.tool_calls!);
+  });
+
+  test("re-stamps _seq densely so the agent counter can continue past it", () => {
+    const withCompactionSeq: ChatMessage[] = [
+      { role: "system", content: "sys", _seq: 0 },
+      { role: "user", content: "hi", _seq: 1_000_000_005 }, // compaction-minted seq
+      { role: "assistant", content: "ok", _seq: 1_000_000_006 },
+    ];
+    const out = restoreTranscript("s1", makeRecord("s1", { messages: withCompactionSeq }));
+    expect(out.map((m) => m._seq)).toEqual([0, 1, 2]);
+  });
+
+  test("does not mutate the caller's record (shallow copy)", () => {
+    const rec = makeRecord("s1", { messages: transcript });
+    const out = restoreTranscript("s1", rec);
+    out[1]!.content = "mutated";
+    out[1]!._seq = 999;
+    expect(transcript[1]!.content).toBe("create hello.txt");
+    expect(transcript[1]!._seq).toBe(1);
+  });
+
+  test("throws a config-kind ResumeError for an unknown session", () => {
+    let caught: unknown;
+    try {
+      restoreTranscript("nope", null);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ResumeError);
+    expect((caught as ResumeError).kind).toBe("config");
+    expect((caught as Error).message).toContain("unknown session: nope");
+  });
+
+  test("throws when the record has no transcript", () => {
+    expect(() => restoreTranscript("s1", makeRecord("s1"))).toThrow(ResumeError);
+    expect(() => restoreTranscript("s1", makeRecord("s1", { messages: [] }))).toThrow(/no saved transcript/);
+  });
+
+  test("throws when the transcript does not start with a system prompt", () => {
+    const bad = makeRecord("s1", { messages: [{ role: "user", content: "hi" }] });
+    expect(() => restoreTranscript("s1", bad)).toThrow(/system prompt/);
   });
 });
 
@@ -147,6 +216,14 @@ describe("cli parseArgs", () => {
     expect(opts.checkCommand).toBe("bun test");
     expect(opts.checkRetries).toBe(3);
     expect(opts.kind).toBe("tests");
+  });
+
+  test("resume flag", async () => {
+    const { parseArgs } = await import("../src/index.ts");
+    const opts = parseArgs(["-p", "fix the typo", "--resume", "20260101-000000-abcd", "--json"]);
+    expect(opts.prompt).toBe("fix the typo");
+    expect(opts.resumeFrom).toBe("20260101-000000-abcd");
+    expect(opts.json).toBe(true);
   });
 
   test("defaults", async () => {
