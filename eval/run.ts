@@ -22,8 +22,13 @@ const TASKS_DIR = path.join(ROOT, "eval", "tasks");
 const RESULTS_DIR = path.join(ROOT, "eval", "results");
 const TASK_TIMEOUT_MS = 30 * 60 * 1000;
 // Delegation runs = local model runtime + Claude's orchestration/verification,
-// so they get a longer SIGKILL backstop than the direct arms.
-const DELEGATE_TASK_TIMEOUT_MS = 40 * 60 * 1000;
+// so they get a longer SIGKILL backstop than the direct arms. Overridable via
+// the DELEGATE_TASK_TIMEOUT_MS env var (milliseconds) for the heavyweight
+// fixtures in fix_plan.md 課題4, where local execution can exceed 20 minutes.
+const DELEGATE_TASK_TIMEOUT_MS = (() => {
+  const override = Number(process.env.DELEGATE_TASK_TIMEOUT_MS);
+  return Number.isFinite(override) && override > 0 ? override : 55 * 60 * 1000;
+})();
 // Per-task LH_HOME dirs live here (under the gitignored results dir) so that
 // delegation sessions survive workdir deletion and never touch the user's real
 // ~/.localrig. See runTask() for the per-run wipe.
@@ -47,11 +52,34 @@ const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
  * same user instruction — the only difference is this delegation directive.
  */
 export const DELEGATE_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
-1. Run via Bash with stdin heredoc: lh -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command>" --max-time 1200
-   Run it in the FOREGROUND with a Bash timeout of 1500000 ms (the local model takes 1-20 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per call.
+1. Run via Bash with stdin heredoc: lh -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command>" --max-time 1800
+   Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-20 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per call.
 2. When it returns, parse the JSON (session_id, status, result, check, report). If check.exit_code===0, do not rerun the acceptance command unless it is flaky or security-sensitive; inspect report.changed_files plus git diff for unexpected changes.
 3. Verify the result cheaply (report.changed_files / git diff / read touched files). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
 4. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
+Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
+
+/**
+ * System-prompt append for the `claude-delegate-async` arm. Same delegation-first
+ * contract as DELEGATE_NUDGE (MUST delegate / foreground / --check / lh feedback /
+ * no edits before a delegation returns) — the ONLY intended difference is the
+ * delegation procedure. Instead of one blocking `lh -p -`, the orchestrator
+ * `lh submit`s the work order (returns immediately with a session_id), then
+ * spends the local model's runtime preparing to verify (reading soon-to-change
+ * files, lining up the acceptance command — still no edits) before reaping the
+ * result with `lh wait`. This measures whether submit→prep→wait shrinks the
+ * caller's effective block time vs. the synchronous round-3 baseline (fix_plan.md
+ * 課題1). Injected ONLY via `claude --append-system-prompt`; the task-facing
+ * prompt stays byte-identical to the baseline.
+ */
+export const ASYNC_DELEGATE_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
+1. Submit the work asynchronously via Bash with stdin heredoc: lh submit -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command>" --max-time 1800
+   This returns immediately with a JSON object containing session_id (and pid) — capture the session_id. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per submit.
+2. While the local agent works, do NOT sit idle and do NOT edit any file — prepare to verify instead. Read the current on-disk state of every file your work order says will change, study the acceptance command and how to read its output, and line up the cheap read-only checks (git diff, reading touched files) you will run on the result. This is preparation only: do not run the acceptance command against the unfinished work and do not edit anything.
+3. Reap the result with: lh wait <session_id> --timeout 2000 --json
+   Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-30 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Parse the JSON (session_id, status, result, check, report). If check.exit_code===0, do not rerun the acceptance command unless it is flaky or security-sensitive; inspect report.changed_files plus git diff for unexpected changes.
+4. Verify the result cheaply (report.changed_files / git diff / read touched files). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
+5. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
 Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
 
 /**
@@ -364,6 +392,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     // comparable — the arm's only difference is which worker it delegates to.
     const args = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"];
     if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
+    else if (agent === "claude-delegate-async") args.push("--append-system-prompt", ASYNC_DELEGATE_NUDGE);
     else if (agent === "claude-delegate-haiku") args.push("--append-system-prompt", HAIKU_DELEGATE_NUDGE);
     else if (isDelegateArm(agent)) throw new Error(`unknown delegate arm: ${agent} (no nudge defined)`);
     return { cmd: "claude", args };
@@ -552,8 +581,8 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     fs.rmSync(lhHome, { recursive: true, force: true });
     fs.mkdirSync(lhHome, { recursive: true });
     env.LH_HOME = lhHome;
-    env.BASH_MAX_TIMEOUT_MS = "1800000";
-    env.BASH_DEFAULT_TIMEOUT_MS = "1500000";
+    env.BASH_MAX_TIMEOUT_MS = "2400000";
+    env.BASH_DEFAULT_TIMEOUT_MS = "2100000";
   }
 
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);

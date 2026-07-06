@@ -1,13 +1,13 @@
 # 評価スイート
 
 LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証条件で比較評価するためのスイート。
-全20タスク。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
+全21タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で他20タスクを明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
 
 ## 前提
 
 - **harness 側**: Ollama が起動しており `qwen36-27b-mtp:latest` が pull 済みであること
   (`curl -s http://localhost:11434/api/tags` で確認。`ollama show` は `:local` タグの解決に失敗するので `:latest` を使う)
-- **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり、全20タスクで $2〜3 程度)
+- **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり、全21タスクで $3 前後)
 - `bun` (このリポジトリの標準ランタイム)。type-repair タスクの verify は `bunx tsc` を使う(初回のみネットワークからダウンロード)
 
 ## 実行
@@ -23,7 +23,7 @@ bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 - `eval/results/` は gitignore 対象(実行結果はコミットしない)。スイート本体(tasks/・run.ts・REPORT.md)はコミットする
 - 判定 = 「verify コマンドが exit 0」かつ「テストファイル非改ざん」の両方
 - タスクごとの制限時間30分(ハーネスには `--max-time 1500` が渡り、SIGKILL 前に自力で切り上げる)。verify は120秒制限
-- 所要時間の目安: claude 全20タスクで約18分、harness で約110分(タスク間で Ollama を専有するので他の重い処理と並走させない)
+- 所要時間の目安: claude 全21タスクで約20分、harness で約110分(mass-migration 追加前の20タスク構成での実測値。21タスク一括だと mass-migration のローカル実行 ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない)
 
 ## claude-delegate アーム(委譲による節約の計測)
 
@@ -55,6 +55,18 @@ bun run eval/analyze-delegation.ts   # summary-claude-delegate-haiku.json があ
 - **ワーカーはフォアグラウンド実行必須**: `HAIKU_DELEGATE_NUDGE` はワーカーの `claude` を `< /dev/null` + Bash タイムアウト 600000ms で**フォアグラウンド**起動するよう指示する。この環境ではバックグラウンド実行したネスト claude は**静かに起動失敗**する(task は "running" のままプロセス不在、パイロットで 40 分 SIGKILL を2回誘発してから判明)ため
 - 委譲判定は `delegated = workers.length > 0`。機械的バックアップとして `~/.claude/projects/<workdir実パスのスラグ>/` 内の(オーケストレータ自身の session_id 以外の)session 数を数え `workerSessions` に記録する。LH_HOME は `eval/results/lh-home/<task>-haiku/` に隔離され**空のままが正常**——ここに `lh` セッションが出たらオーケストレータが誤ってローカルへ委譲した混入(`delegations[]` に現れ、レポートで `⚠ lh contamination` と表示)
 - `analyze-delegation.ts` は 3アーム比較(baseline / lh-delegate / haiku-delegate)に切り替わり、haiku 側は**オーケストレータのみのコスト**と**オーケストレータ+ワーカーの課金総額**の両方を出す(lh ワーカーは無料だが haiku ワーカーは課金される)。H1(固定オーケストレーション床の検証: haiku のオーケストレータのみコスト vs lh コスト)/H2(ワーカー品質: 合格率)/H3(実時間: 3アーム比較)の仮説セクション付き。haiku の summary が無ければ従来の 2-way 出力のまま
+
+### claude-delegate-async アーム(submit/wait 非同期委譲の効果計測)
+
+同期版 `claude-delegate` が `lh -p -` でブロックするのに対し、`lh submit`(即座に session_id を返す)→ 検証準備 → `lh wait` の非同期パターンに差し替え、**呼び出し元のブロック時間が縮むか**を測るアーム。委譲第一/フォアグラウンド/`--check`/`lh feedback` の契約は同期版と同一で、指示は `ASYNC_DELEGATE_NUDGE` を `--append-system-prompt` で注入する。
+
+```sh
+bun run eval/run.ts --agent claude-delegate-async --task rename-sweep
+```
+
+- 出力先はアームごとに分離される: summary は `eval/results/summary-claude-delegate-async.json`、LH_HOME は `eval/results/lh-home/<task>-async/`(同期版の `<task>` / haiku 版の `<task>-haiku` と衝突しない)。生ログは `eval/results/claude-delegate-async-<task>.log`
+- `analyze-delegation.ts` の 3アーム比較(baseline / lh-delegate / haiku)には**含まれない**——非同期アームはブロック時間の計測が目的で、コスト比較は同期版で足りるため
+- **実測サマリ**: 単一タスクの headless 設定では submit/wait は実効ブロック時間を縮めず、むしろターン増でコスト +33%(**負の結果**)。トランスクリプトのタイムライン証跡と限定条件は [REPORT.md](REPORT.md) の「委譲検証」第4ラウンド・課題1 を参照
 
 ## ランナーの仕組みと落とし穴
 
@@ -88,6 +100,7 @@ bun run eval/analyze-delegation.ts   # summary-claude-delegate-haiku.json があ
 | no-repro | 偽バグ報告への正直な「再現不能」報告(迎合バイアス検査) |
 | perf-fix | 計算量改善(O(n²)→O(n)、経過時間アサーション) |
 | rename-sweep | 12ファイル23箇所の機械的リネーム |
+| mass-migration | 40ファイル46箇所の重量級API移行(委譲コスト計測用。source の正解値はパス導出不能でコメント内にのみ存在=単一sed耐性) |
 
 ## 新タスク追加のプロトコル
 

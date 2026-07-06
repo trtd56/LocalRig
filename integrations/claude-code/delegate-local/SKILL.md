@@ -11,11 +11,13 @@ description: Delegate small, mechanical, verifiable coding tasks to LocalRig via
 
 Delegate when ALL of these hold:
 - The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
-- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost — about $0.11–0.15 of *your own* tokens for writing the work order, verifying, and recording feedback — regardless of how big the task is. So it only pays when doing the task yourself would cost more than that: many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Measured break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself.
+- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost — about $0.11–0.18 of *your own* tokens for writing the work order, verifying, and recording feedback — regardless of how big the task is. So it only pays when doing the task yourself would cost more than that: many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Measured break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself.
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
 
-Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, small quick edits below the cost floor (a one-line doc fix, a couple of type errors — you'll spend more orchestrating than doing it), or anything urgent (local runs take 1–15 minutes, roughly 3–7x your own wall-clock).
+Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, small quick edits below the cost floor (a one-line doc fix, a couple of type errors — you'll spend more orchestrating than doing it), or anything urgent (local runs take 1–15 minutes, roughly 3–7x your own wall-clock — a heavy sweep has been measured at ~7x).
+
+**Before delegating a mechanical sweep, ask whether a script beats it.** If the rule is codifiable and the correct values are machine-extractable (from comments, a manifest, config), you can usually fold the whole sweep with one script you write yourself, far below the cost floor — a 40-file / 46-site change stayed at $0.23 baseline that way. "More files" does not mean "more expensive" or "bigger delegation win": realistic delegation savings top out around −30 to −50%, not −80%. Delegate the sweep only when the per-file edits need judgement a script can't capture.
 
 ## How to call
 
@@ -31,7 +33,7 @@ EOF
 - Add `--check "<acceptance command>"` whenever the task has a commandable definition of done. LocalRig runs it after the agent finishes and feeds failures back to the model for up to `--check-retries` attempts (default 2).
 - `--json` prints a single JSON object on stdout: `session_id`, `status` (`ok` | `check_failed` | `max_iterations` | `loop_abort` | ...), `result`, `check`, `report`, `duration_ms`, `tokens`, and a ready-made `feedback_command`.
 - `report.changed_files` lists files changed through the write/edit tools, and `report.commands_run` lists bash commands the local agent ran. Bash-side file changes (`rm`, `mv`, generated files) are not tracked there, so still inspect the diff.
-- Use a Bash timeout of at least 600000 ms. For bigger tasks prefer `lh submit -p - ... --json`, do other work, then `lh wait <session_id> --json` (or `lh poll <session_id> --json` to check without blocking); local 27B inference is still effectively serial on one Ollama host.
+- Use a Bash timeout of at least 900000 ms (a heavy run plus `--check` retries has been measured near 10 minutes). For a single task, just call `lh -p` synchronously and wait — submitting then immediately waiting only adds turns (measured +33% cost, same effective block). Use `lh submit -p - ... --json` → do **unrelated** work → `lh wait <session_id> --json` (or `lh poll <session_id> --json` to check without blocking) *only* when you genuinely have other work to advance meanwhile; 27B inference is effectively serial on one Ollama host anyway.
 - Add `--auto` to make the local agent refuse dangerous bash commands instead of running them (recommended when delegating into repos with scripts you haven't read).
 - Exit code 0 means the agent believes it finished; non-zero means it stopped early — treat the work as incomplete.
 
@@ -54,6 +56,16 @@ lh feedback <session_id> fail --source claude-code --notes "edited wrong file; h
 - `pass` = you accepted the work as-is (or with trivial touch-ups).
 - `fail` = you had to redo or substantially fix it. Always include `--notes` explaining the failure mode — notes drive future prompt/harness improvements.
 - If the run failed, fix the task yourself afterwards; do not retry delegation more than once for the same task.
+
+## Send it back — targeted follow-up with `--resume`
+
+When your verification finds a narrow, fixable gap (a broken output-format rule, one missed file — not a fundamental miss), correct it inside the *same* session instead of rewriting the whole work order:
+
+```bash
+lh -p "The first line must be exactly `FIXED:`. Fix only that." --resume <session_id> --json
+```
+
+`--resume` replays the original transcript, appends your instruction as the next turn, and issues a **new** `session_id` (the JSON and session record carry `resumed_from`). It inherits the original `--cwd` unless you override it. One-shot only — not available in the REPL or `lh submit`; an unknown id returns `error_kind: "config"`. This is the standard way to act on a `feedback fail` when the fix is narrow: it saves rebuilding the full prompt for a re-delegation. Still verify and record a fresh `feedback` verdict on the new session, and don't send back more than once for the same task.
 
 ## Calibrate
 

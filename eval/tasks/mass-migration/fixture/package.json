@@ -1,0 +1,5 @@
+{
+  "name": "mass-migration-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

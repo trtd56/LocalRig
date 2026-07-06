@@ -1,0 +1,13 @@
+{
+  "name": "mass-migration",
+  "prompt": "このプロジェクトでは src/lib/log.ts の旧ロギングAPI log.write(level, msg) が非推奨になり、src/lib/logger.ts の新API logger.emit({ level, msg, source }) に全面移行することになりました。新APIでは第3フィールド source(発信元モジュール名)が必須です。src/ 以下の全40ファイルの呼び出し箇所(計46箇所)を新APIへ移行してください。移行時のルールは機械的です: (1) import を { log } from \"../lib/log\" から { logger } from \"../lib/logger\" へ差し替える、(2) 各 log.write(\"<level>\", <msg>) を logger.emit({ level: \"<level>\", msg: <msg>, source: \"<モジュール名>\" }) へ書き換える(level と msg はそのまま引き継ぐ)。source に入れる値は各ファイル先頭の // module-source: <名前> コメントに書かれた文字列をそのまま使うこと(ファイルごとに異なり、パスからは機械的に導出できません)。全ファイルの移行が完了したら src/lib/log.ts を削除してください。src/lib/logger.ts・tsconfig.json・test/ 配下(テストと検証スクリプト)は変更禁止です。挙動は変えないこと。受け入れコマンド `bash test/verify.sh` が exit 0 になれば完了です(bun test の全パス、旧API残存なし、logger.ts と tsconfig.json の非改変を検証します)。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "all 40 caller files migrated from src/lib/log.ts to src/lib/logger.ts (46 call sites)",
+    "each logger.emit uses the source string from that file's // module-source: comment",
+    "src/lib/log.ts deleted",
+    "no 'lib/log\"' import or log.write( call site remains in src/",
+    "src/lib/logger.ts and tsconfig.json unchanged (sha256)",
+    "bun test passes (behaviour + exact per-module source)"
+  ]
+}
