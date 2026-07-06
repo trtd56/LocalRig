@@ -66,6 +66,10 @@ export class Agent {
     private cwd: string,
     private onEvent: (e: AgentEvent) => void,
     private askPermission: PermissionFn,
+    // Prebuilt system prompt. `lh batch` builds one at batch start and passes
+    // the same string to every task's agent so it stays byte-identical (Ollama's
+    // prefix KV cache holds); a one-shot/REPL agent omits it and builds its own.
+    systemPrompt?: string,
   ) {
     this.client = new OllamaClient(config.ollamaUrl, config.model);
     this.toolCtx = {
@@ -78,7 +82,7 @@ export class Agent {
     this.tools = createTools(config, this.toolCtx);
     this.loopDetector = new LoopDetector(config.loopWarnAfter, config.loopAbortAfter);
     this.contextManager = new ContextManager(config, this.client);
-    this.messages.push(this.stamp({ role: "system", content: buildSystemPrompt(cwd, config) }));
+    this.messages.push(this.stamp({ role: "system", content: systemPrompt ?? buildSystemPrompt(cwd, config) }));
   }
 
   interrupt(): void {

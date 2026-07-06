@@ -38,6 +38,21 @@ describe("shouldInterruptThinking", () => {
   });
 });
 
+describe("Agent system prompt", () => {
+  test("uses an injected system prompt verbatim (lh batch reuses one across tasks)", () => {
+    const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SHARED SYS PROMPT");
+    const msgs = agent.getMessages();
+    expect(msgs).toHaveLength(1);
+    expect(msgs[0]!.role).toBe("system");
+    expect(msgs[0]!.content).toBe("SHARED SYS PROMPT");
+  });
+
+  test("builds its own system prompt when none is injected (one-shot/REPL)", () => {
+    const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false);
+    expect(agent.getMessages()[0]!.content).toContain("You are a coding agent");
+  });
+});
+
 describe("Agent.restore", () => {
   test("replaces the fresh system prompt with a restored transcript", () => {
     const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false);

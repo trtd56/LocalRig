@@ -5,9 +5,8 @@
 // Ollama-backed task executor. Keep this module free of process/Agent I/O so
 // it stays unit-testable without a live model.
 
-import type { CheckRecord } from "./session.ts";
-import type { BatchStatus } from "./session.ts";
-import type { ErrorKind, RunReport, RunStatus } from "./types.ts";
+import type { BatchStatus, CheckRecord } from "./session.ts";
+import type { ChangedFileAction, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
@@ -113,38 +112,40 @@ export function isFatalOutcome(status: RunStatus, errorKind?: ErrorKind): boolea
 
 /**
  * Roll per-task statuses up into the batch status. A fatal abort (signalled by
- * `fatal`, which also leaves "not_run" tasks) is "error". Otherwise: all ran
- * tasks ok → "ok", none ok → "failed", a mix → "partial".
+ * `fatal`) is "error". Otherwise, judged over ALL tasks: every task ok → "ok",
+ * no task ok → "failed", a mix → "partial". `not_run` counts against "ok" (it
+ * can arise without a fatal — e.g. the total wall-clock budget ran out before a
+ * task started — and an incomplete batch must not report "ok").
  */
 export function aggregateBatchStatus(statuses: RunStatus[], fatal: boolean): BatchStatus {
   if (fatal) return "error";
-  const ran = statuses.filter((s) => s !== "not_run");
-  if (ran.length === 0) return "error";
-  const ok = ran.filter((s) => s === "ok").length;
-  if (ok === ran.length) return "ok";
+  if (statuses.length === 0) return "error";
+  const ok = statuses.filter((s) => s === "ok").length;
+  if (ok === statuses.length) return "ok";
   if (ok === 0) return "failed";
   return "partial";
 }
 
 /**
- * Per-task report slice: what changed during one task, given the cumulative
- * session report snapshotted before and after it. commandsRun is append-only,
- * so the tail past `before`'s length is this task's. A changed file counts for
- * the task when its (path, action) pair is new since `before`.
- *
- * Caveat: a file created in one task and only edited in a later one stays
- * "created" in the cumulative map, so the later edit is not re-attributed —
- * acceptable because batch tasks are meant to be independent.
+ * Merge per-task reports into one cumulative report (for the session-level
+ * record). commandsRun is concatenated in task order; a changed file keeps a
+ * "created" action if any task created it, else the last action wins.
  */
-export function diffReports(before: RunReport, after: RunReport): RunReport {
-  const beforeActions = new Map(before.changedFiles.map((f) => [f.path, f.action]));
-  return {
-    changedFiles: after.changedFiles.filter((f) => beforeActions.get(f.path) !== f.action),
-    commandsRun: after.commandsRun.slice(before.commandsRun.length),
-  };
+export function mergeReports(reports: RunReport[]): RunReport {
+  const files = new Map<string, ChangedFileAction>();
+  const commandsRun: string[] = [];
+  for (const r of reports) {
+    for (const f of r.changedFiles) {
+      if (files.get(f.path) !== "created") files.set(f.path, f.action);
+    }
+    commandsRun.push(...r.commandsRun);
+  }
+  return { changedFiles: [...files].map(([path, action]) => ({ path, action })), commandsRun };
 }
 
-/** One task's full outcome as produced by an executor and consumed by callers. */
+/** One task's full outcome as produced by an executor and consumed by callers.
+ *  Each task runs in a fresh agent context, so `report` and `messages` are that
+ *  task's own (not a slice of a shared session). */
 export interface TaskExecution {
   task: BatchTask;
   status: RunStatus;
@@ -154,6 +155,8 @@ export interface TaskExecution {
   report: RunReport;
   turns: number;
   durationMs: number;
+  /** This task's transcript (system prompt + task prompt + repairs), for audit. */
+  messages?: readonly ChatMessage[];
 }
 
 export interface BatchResult {
@@ -162,31 +165,59 @@ export interface BatchResult {
   fatal: boolean;
 }
 
-const EMPTY_REPORT: RunReport = { changedFiles: [], commandsRun: [] };
+/** The slice of an Agent that `lh batch` drives, so a clock/agent/check-runner
+ *  can be injected for tests without a live model (the real Agent satisfies it). */
+export interface BatchAgent {
+  run(prompt: string): Promise<string>;
+  readonly lastRunStatus: RunStatus;
+  getReport(): RunReport;
+  getMessages(): readonly ChatMessage[];
+  interrupt(): void;
+}
 
-function notRun(task: BatchTask): TaskExecution {
-  return { task, status: "not_run", report: EMPTY_REPORT, turns: 0, durationMs: 0 };
+/** Injected side-effecting dependencies of cmdBatch. Production wires the real
+ *  clock, a fresh Agent per task, the shared-config budget knob, and the shell
+ *  check runner; tests substitute fakes (inject `now` to drive the wall-clock
+ *  budget with no real Date dependency). */
+export interface BatchDeps {
+  now: () => number;
+  /** Build a fresh agent (clean context) for the next task, seeded with the
+   *  batch's one shared system prompt (same string for every task). */
+  createAgent: (systemPrompt: string) => BatchAgent;
+  /** Set the wall-clock budget handed to the next agent.run() (0 = unlimited). */
+  applyBudget: (ms: number) => void;
+  runCheck: (command: string, timeoutMs: number, attempts: number) => Promise<CheckRecord>;
+}
+
+/** A task that never ran — a fatal earlier task aborted the batch, or the total
+ *  wall-clock budget was already spent before this task started. */
+export function notRun(task: BatchTask): TaskExecution {
+  return { task, status: "not_run", report: { changedFiles: [], commandsRun: [] }, turns: 0, durationMs: 0 };
 }
 
 /**
  * Run each task in order via `runTask`, stopping early on a fatal outcome and
- * marking the remaining tasks "not_run". Pure orchestration: all model/agent
- * I/O lives behind `runTask`, so tests inject a fake executor.
+ * marking the remaining tasks "not_run". `onProgress` fires after every task
+ * (ran or not_run) with the executions-so-far, so the caller can persist the
+ * session incrementally and survive a mid-batch kill. Pure orchestration: all
+ * model/agent I/O lives behind `runTask`, so tests inject a fake executor.
  */
 export async function executeBatch(
   tasks: BatchTask[],
   runTask: (task: BatchTask) => Promise<TaskExecution>,
+  onProgress?: (executions: TaskExecution[]) => void,
 ): Promise<BatchResult> {
   const executions: TaskExecution[] = [];
   let fatal = false;
   for (const task of tasks) {
     if (fatal) {
       executions.push(notRun(task));
-      continue;
+    } else {
+      const exec = await runTask(task);
+      executions.push(exec);
+      if (isFatalOutcome(exec.status, exec.errorKind)) fatal = true;
     }
-    const exec = await runTask(task);
-    executions.push(exec);
-    if (isFatalOutcome(exec.status, exec.errorKind)) fatal = true;
+    onProgress?.(executions);
   }
   return { executions, status: aggregateBatchStatus(executions.map((e) => e.status), fatal), fatal };
 }

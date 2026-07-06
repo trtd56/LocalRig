@@ -4,16 +4,19 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
   aggregateBatchStatus,
+  type BatchAgent,
   BatchConfigError,
-  diffReports,
+  type BatchDeps,
   executeBatch,
   isFatalOutcome,
+  mergeReports,
+  notRun,
   parseManifest,
   reverifyBatch,
   type BatchTask,
   type TaskExecution,
 } from "../src/batch.ts";
-import type { RunReport, RunStatus } from "../src/types.ts";
+import type { ChatMessage, RunReport, RunStatus } from "../src/types.ts";
 import {
   appendFeedback,
   type CheckRecord,
@@ -113,42 +116,37 @@ describe("aggregateBatchStatus", () => {
   test("a fatal abort → error", () => {
     expect(aggregateBatchStatus(["ok", "interrupted", "not_run"], true)).toBe("error");
   });
-  test("not_run tasks are ignored when judging ok/partial/failed", () => {
-    // Should never happen without a fatal, but the ran-set filter must hold.
-    expect(aggregateBatchStatus(["ok", "ok", "not_run"], false)).toBe("ok");
+  test("a non-fatal not_run (e.g. budget) keeps the batch off 'ok'", () => {
+    // not_run can arise without a fatal when the total budget runs out; an
+    // incomplete batch must report partial, not ok.
+    expect(aggregateBatchStatus(["ok", "ok", "not_run"], false)).toBe("partial");
+    expect(aggregateBatchStatus(["not_run", "not_run"], false)).toBe("failed");
   });
 });
 
-// ---------- per-task report split ----------
+// ---------- cumulative report merge ----------
 
-describe("diffReports", () => {
-  test("slices commands and changed files added since the snapshot", () => {
-    const before: RunReport = {
-      changedFiles: [{ path: "a.ts", action: "created" }],
-      commandsRun: ["bun test"],
-    };
-    const after: RunReport = {
+describe("mergeReports", () => {
+  test("concatenates commands and unions changed files across tasks", () => {
+    const a: RunReport = { changedFiles: [{ path: "a.ts", action: "created" }], commandsRun: ["bun test"] };
+    const b: RunReport = { changedFiles: [{ path: "b.ts", action: "modified" }], commandsRun: ["bun run build"] };
+    expect(mergeReports([a, b])).toEqual({
       changedFiles: [
         { path: "a.ts", action: "created" },
         { path: "b.ts", action: "modified" },
       ],
-      commandsRun: ["bun test", "bun run build", "grep -q x b.ts"],
-    };
-    expect(diffReports(before, after)).toEqual({
-      changedFiles: [{ path: "b.ts", action: "modified" }],
-      commandsRun: ["bun run build", "grep -q x b.ts"],
+      commandsRun: ["bun test", "bun run build"],
     });
   });
 
-  test("an action upgrade on the same path counts for the later task", () => {
-    const before: RunReport = { changedFiles: [{ path: "a.ts", action: "modified" }], commandsRun: [] };
-    const after: RunReport = { changedFiles: [{ path: "a.ts", action: "created" }], commandsRun: [] };
-    expect(diffReports(before, after).changedFiles).toEqual([{ path: "a.ts", action: "created" }]);
+  test("a 'created' action for a path is not downgraded by a later 'modified'", () => {
+    const a: RunReport = { changedFiles: [{ path: "x.ts", action: "created" }], commandsRun: [] };
+    const b: RunReport = { changedFiles: [{ path: "x.ts", action: "modified" }], commandsRun: [] };
+    expect(mergeReports([a, b]).changedFiles).toEqual([{ path: "x.ts", action: "created" }]);
   });
 
-  test("empty diff when nothing changed", () => {
-    const r: RunReport = { changedFiles: [{ path: "a.ts", action: "created" }], commandsRun: ["x"] };
-    expect(diffReports(r, r)).toEqual({ changedFiles: [], commandsRun: [] });
+  test("empty when there are no reports", () => {
+    expect(mergeReports([])).toEqual({ changedFiles: [], commandsRun: [] });
   });
 });
 
@@ -212,6 +210,26 @@ describe("executeBatch", () => {
     );
     expect(result.status).toBe("error");
     expect(result.executions.map((e) => e.status)).toEqual(["ok", "ok", "error"]);
+  });
+
+  test("onProgress fires after every task with the executions so far", async () => {
+    const snapshots: string[][] = [];
+    await executeBatch(
+      tasks,
+      async (t) => fakeExec(t, "ok"),
+      (execs) => snapshots.push(execs.map((e) => e.task.id)),
+    );
+    expect(snapshots).toEqual([["a"], ["a", "b"], ["a", "b", "c"]]);
+  });
+
+  test("onProgress fires for not_run tasks after a fatal abort too", async () => {
+    const counts: number[] = [];
+    await executeBatch(
+      tasks,
+      async (t) => fakeExec(t, t.id === "a" ? "interrupted" : "ok"),
+      (execs) => counts.push(execs.length),
+    );
+    expect(counts).toEqual([1, 2, 3]); // b and c are not_run but still reported
   });
 });
 
@@ -421,6 +439,170 @@ describe("batch feedback and stats", () => {
     expect(stats.graded).toBe(2);
     expect(stats.pass).toBe(1);
     expect(stats.fail).toBe(1);
+  });
+});
+
+// ---------- cmdBatch execution (injected agent + clock) ----------
+
+describe("cmdBatch execution", () => {
+  let tmpHome: string;
+  const origLog = console.log;
+
+  beforeEach(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "localrig-batch-"));
+    process.env.LH_HOME = tmpHome;
+    console.log = () => {}; // silence the batch's --json output; tests read loadSession
+  });
+  afterEach(() => {
+    console.log = origLog;
+    delete process.env.LH_HOME;
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+  });
+
+  interface FakeSetup {
+    now?: () => number;
+    status?: (prompt: string) => RunStatus;
+    check?: (command: string) => CheckRecord;
+    onRun?: (prompt: string) => void;
+  }
+
+  // Fake batch dependencies: fresh recording agent per task, a check runner, and
+  // an injectable clock — no live model, no real Date (time is driven by `now`).
+  function fakeDeps(setup: FakeSetup = {}) {
+    const created: BatchAgent[] = [];
+    const budgets: number[] = [];
+    const deps: BatchDeps = {
+      now: setup.now ?? (() => 0),
+      applyBudget: (ms) => budgets.push(ms),
+      runCheck: async (command) => (setup.check ? setup.check(command) : { command, exit_code: 0, attempts: 1, output_tail: "ok" }),
+      createAgent: (systemPrompt) => {
+        const msgs: ChatMessage[] = [{ role: "system", content: systemPrompt, _seq: 0 }];
+        let last: RunStatus = "ok";
+        const agent: BatchAgent = {
+          run: async (prompt: string) => {
+            msgs.push({ role: "user", content: prompt });
+            setup.onRun?.(prompt);
+            last = setup.status ? setup.status(prompt) : "ok";
+            return "done";
+          },
+          get lastRunStatus() {
+            return last;
+          },
+          getReport: () => ({ changedFiles: [], commandsRun: [] }),
+          getMessages: () => msgs,
+          interrupt: () => {},
+        };
+        created.push(agent);
+        return agent;
+      },
+    };
+    return { deps, created, budgets };
+  }
+
+  function manifestFile(tasks: unknown[]): string {
+    const f = path.join(tmpHome, "tasks.json");
+    fs.writeFileSync(f, JSON.stringify({ tasks }));
+    return f;
+  }
+
+  test("each task runs in a fresh context: system + only that task's prompt", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    const { deps, created } = fakeDeps();
+    const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
+    const rc = await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--json", "--quiet", "--session-id", "ctx-sid"], deps);
+    expect(rc).toBe(0);
+    expect(created).toHaveLength(2); // one fresh agent per task
+    // Each agent's transcript is [system, its own user prompt] — task B's agent
+    // never saw task A's prompt.
+    expect(created[0]!.getMessages().map((m) => m.role)).toEqual(["system", "user"]);
+    expect(created[0]!.getMessages()[1]!.content).toBe("do A");
+    expect(created[1]!.getMessages()[1]!.content).toBe("do B");
+    // The saved transcript is the per-task segments concatenated (audit).
+    const rec = loadSession("ctx-sid")!;
+    expect(rec.messages!.map((m) => m.role)).toEqual(["system", "user", "system", "user"]);
+    expect(rec.messages!.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["do A", "do B"]);
+    expect(rec.status).toBe("ok");
+  });
+
+  test("all tasks reuse one byte-identical system prompt (prefix KV cache holds)", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    const { deps, created } = fakeDeps();
+    const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
+    await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--json", "--quiet", "--session-id", "sys-sid"], deps);
+    // The prompt cmdBatch built once and handed to each fresh agent.
+    const sysA = created[0]!.getMessages()[0]!.content;
+    const sysB = created[1]!.getMessages()[0]!.content;
+    expect(sysA).toBe(sysB);
+    expect(sysA.length).toBeGreaterThan(362); // the drift the fix addresses was past char 362
+    // ...and the two system messages in the saved transcript are identical too.
+    const sys = loadSession("sys-sid")!.messages!.filter((m) => m.role === "system").map((m) => m.content);
+    expect(sys).toHaveLength(2);
+    expect(sys[0]).toBe(sys[1]);
+  });
+
+  test("--max-time is a TOTAL budget: later tasks go not_run once it is spent", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    let clock = 0;
+    const durations: Record<string, number> = { "do A": 6000, "do B": 6000, "do C": 0 };
+    const { deps, budgets } = fakeDeps({
+      now: () => clock,
+      status: (prompt) => (prompt === "do B" ? "timeout" : "ok"),
+      onRun: (prompt) => {
+        clock += durations[prompt] ?? 0; // simulate wall-clock spent by the task
+      },
+    });
+    const file = manifestFile([
+      { id: "a", prompt: "do A" },
+      { id: "b", prompt: "do B" },
+      { id: "c", prompt: "do C" },
+    ]);
+    const rc = await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "bud-sid", "--max-time", "10"], deps);
+    const rec = loadSession("bud-sid")!;
+    expect(rec.tasks!.map((t) => t.status)).toEqual(["ok", "timeout", "not_run"]);
+    expect(rec.status).toBe("partial");
+    expect(rc).toBe(1);
+    // Each task got the REMAINING budget, not a fresh full one (10s then 4s).
+    expect(budgets).toEqual([10_000, 4_000]);
+  });
+
+  test("without --max-time there is no budget: every task runs (unlimited)", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    let clock = 0;
+    const { deps, budgets } = fakeDeps({ now: () => (clock += 1_000_000) });
+    const file = manifestFile([{ id: "a", prompt: "A" }, { id: "b", prompt: "B" }]);
+    await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "nob-sid"], deps);
+    const rec = loadSession("nob-sid")!;
+    expect(rec.tasks!.map((t) => t.status)).toEqual(["ok", "ok"]);
+    expect(budgets).toEqual([0, 0]); // 0 = unlimited handed to each agent
+  });
+
+  test("persists incrementally: running placeholder, then each completed task", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    const snaps: Record<string, SessionRecord | null> = {};
+    const { deps } = fakeDeps({
+      onRun: (prompt) => {
+        snaps[prompt] = loadSession("inc-sid");
+      },
+    });
+    const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
+    await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "inc-sid"], deps);
+    // When task A starts, only the running placeholder exists (no tasks yet).
+    expect(snaps["do A"]!.status).toBe("running");
+    expect(snaps["do A"]!.tasks).toEqual([]);
+    // When task B starts, task A is already on disk with status running.
+    expect(snaps["do B"]!.status).toBe("running");
+    expect(snaps["do B"]!.tasks!.map((t) => t.id)).toEqual(["a"]);
+    // The final record is authoritative.
+    const final = loadSession("inc-sid")!;
+    expect(final.status).toBe("ok");
+    expect(final.tasks!.map((t) => t.id)).toEqual(["a", "b"]);
+  });
+
+  test("notRun helper preserves the task's id/kind for the record", () => {
+    const nr = notRun({ id: "x", prompt: "p", kind: "docs" });
+    expect(nr.status).toBe("not_run");
+    expect(nr.task.kind).toBe("docs");
+    expect(nr.report).toEqual({ changedFiles: [], commandsRun: [] });
   });
 });
 

@@ -5,9 +5,12 @@ import * as readline from "node:readline";
 import * as path from "node:path";
 import { Agent } from "./agent.ts";
 import {
+  type BatchAgent,
+  type BatchDeps,
   BatchConfigError,
-  diffReports,
   executeBatch,
+  mergeReports,
+  notRun,
   parseManifest,
   reverifyBatch,
   type BatchTask,
@@ -15,6 +18,7 @@ import {
 } from "./batch.ts";
 import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
 import { defaultConfig, type Config } from "./config.ts";
+import { buildSystemPrompt } from "./prompt/system.ts";
 import { createRenderer, c } from "./ui/render.ts";
 import type { AgentEvent, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
 import {
@@ -83,8 +87,13 @@ Batch flags:
   --tasks FILE|-            JSON manifest of tasks (- reads stdin). Shape:
                             {"tasks":[{"id","prompt","kind?","check?",
                             "check_retries?"}]} (a bare [...] array also works).
-                            Tasks run in order in one session; --cwd, --max-time
-                            (per task), --json, --quiet, -v, --auto/--yolo apply.
+                            Tasks run in order, each in a fresh context (system
+                            prompt + that task's prompt only); --cwd, --json,
+                            --quiet, -v, --auto/--yolo apply. --max-time here is
+                            the TOTAL budget for the whole batch (all tasks +
+                            checks + sweep); a task started with no budget left is
+                            not_run, one still running times out. The session is
+                            saved incrementally (survives a mid-batch kill).
                             After all tasks, every passed check is re-run once
                             (final sweep): a task whose check regressed (a later
                             task clobbered its work) is downgraded to check_failed
@@ -109,6 +118,7 @@ interface CliOptions {
   quiet: boolean;
   cwd?: string;
   permissionModeSet: boolean;
+  maxTimeSet: boolean;
   checkCommand?: string;
   checkRetries: number;
   kind?: string;
@@ -125,6 +135,7 @@ export function parseArgs(argv: string[]): CliOptions {
     json: false,
     quiet: false,
     permissionModeSet: false,
+    maxTimeSet: false,
     checkRetries: 2,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -154,6 +165,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--max-time":
         config.maxTimeMs = Number(argv[++i]) * 1000;
+        opts.maxTimeSet = true;
         break;
       case "--think-budget":
         config.thinkBudgetChars = Number(argv[++i]);
@@ -571,6 +583,18 @@ function summarizeTasks(executions: TaskExecution[]): string {
   return `${executions.length} task${executions.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
+function toTaskRecords(executions: TaskExecution[]): TaskRecord[] {
+  return executions.map((e) => ({
+    id: e.task.id,
+    kind: e.task.kind,
+    status: e.status,
+    durationMs: e.durationMs,
+    turns: e.turns,
+    check: e.check,
+    report: e.report,
+  }));
+}
+
 function printBatchSummary(record: SessionRecord, executions: TaskExecution[]): void {
   for (const e of executions) {
     const parts = [`  ${e.task.id.padEnd(16)} ${e.status.padEnd(14)} ${Math.round(e.durationMs / 1000)}s`];
@@ -588,13 +612,19 @@ function printBatchSummary(record: SessionRecord, executions: TaskExecution[]): 
 }
 
 /**
- * `lh batch`: run several independent tasks in one agent session (amortizing
- * session start-up). Each task's prompt is injected as the next user message on
- * the shared transcript, run to completion, then optionally re-verified with
- * its own `check` loop scoped to the task. A fatal task aborts the batch and
- * leaves the rest "not_run"; other failures fall through to the next task.
+ * `lh batch`: run several independent tasks back-to-back, amortizing session
+ * start-up. Each task runs in a FRESH agent context (system prompt + that task's
+ * prompt only) and is run to completion, then optionally re-verified with its
+ * own `check` loop. `--max-time` is the TOTAL wall-clock budget for the whole
+ * batch. A fatal task aborts the batch and leaves the rest "not_run"; other
+ * failures fall through to the next task. The session is persisted incrementally
+ * (running placeholder, then after every task) so a mid-batch kill still leaves
+ * a record of the completed tasks.
+ *
+ * `deps` is injected only by tests (fake clock/agent/check runner); production
+ * passes nothing and gets the real wiring.
  */
-export async function cmdBatch(argv: string[]): Promise<number> {
+export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number> {
   const opts = parseArgs(argv);
   const json = opts.json;
 
@@ -626,8 +656,13 @@ export async function cmdBatch(argv: string[]): Promise<number> {
   if (!opts.permissionModeSet) config.permissionMode = "yolo";
   const cwd = path.resolve(opts.cwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
-  const originalMaxTimeMs = config.maxTimeMs;
   const denyPermission = async () => false;
+  // --max-time is the TOTAL wall-clock budget for the whole batch (all tasks +
+  // checks + the final sweep), not per task. When it is not set explicitly, fall
+  // back to the per-run default × task count so each task keeps its usual
+  // allowance (the default is 0 = unlimited, which stays unlimited).
+  const totalBudgetMs = opts.maxTimeSet ? config.maxTimeMs : config.maxTimeMs * tasks.length;
+  const budgetActive = totalBudgetMs > 0;
 
   const showProgress = json ? opts.verbose : !opts.quiet;
   const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
@@ -645,39 +680,68 @@ export async function cmdBatch(argv: string[]): Promise<number> {
     progress?.(e);
   };
 
-  const agent = new Agent(config, cwd, onEvent, denyPermission);
-  process.on("SIGINT", () => {
-    agent.interrupt();
-    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
-  });
+  // Build the system prompt ONCE for the whole batch. Each task gets a fresh
+  // agent, but they all reuse this one string (the directory snapshot inside it
+  // is frozen at batch start — stale is harmless, it is only a 25-entry hint),
+  // so the system prefix stays byte-identical and Ollama's prefix KV cache holds.
+  const systemPrompt = buildSystemPrompt(cwd, config);
 
-  // Run one task: agent loop to completion, then its own check-repair loop
-  // (per-task retry count and per-task wall-clock budget). The report slice is
-  // the diff of the cumulative session report across the task's boundary.
+  // Real wiring: fresh Agent per task, the shared-config budget knob, the shell
+  // check runner, and the system clock. Tests inject fakes via `deps`.
+  const d: BatchDeps = deps ?? {
+    now: () => Date.now(),
+    createAgent: (sp) => new Agent(config, cwd, onEvent, denyPermission, sp),
+    applyBudget: (ms) => {
+      config.maxTimeMs = ms;
+    },
+    runCheck: (command, timeoutMs, attempts) => runCheckCommand({ command, cwd, timeoutMs, attempts }),
+  };
+
+  // The SIGINT handler must interrupt whichever fresh agent is currently running.
+  // Registered only in production (an injected deps means a test — avoid leaking
+  // process listeners across test runs).
+  let currentAgent: BatchAgent | undefined;
+  if (deps === undefined) {
+    process.on("SIGINT", () => {
+      currentAgent?.interrupt();
+      process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+    });
+  }
+
+  const started = d.now();
+  const remainingMs = () => totalBudgetMs - (d.now() - started);
+
+  // Run one task in a FRESH agent context (the shared system prompt + this
+  // task's prompt only). Tasks are independent by contract, and a 27B model
+  // degrades and slows when a later task inherits an earlier one's bloated
+  // transcript; a clean context avoids that. The agent loop and check-repair
+  // loop are handed the budget REMAINING for the whole batch, so their total
+  // can never exceed --max-time.
   const runTask = async (task: BatchTask): Promise<TaskExecution> => {
-    const taskStarted = Date.now();
+    if (budgetActive && remainingMs() <= 0) return notRun(task); // total budget spent
+    const taskStarted = d.now();
     const turnsBefore = turns;
-    const reportBefore = agent.getReport();
-    config.maxTimeMs = originalMaxTimeMs; // fresh budget for this task
+    const agent = d.createAgent(systemPrompt);
+    currentAgent = agent;
     const checkRetries = task.checkRetries ?? 2;
     let status: RunStatus = "error";
     let error: string | undefined;
     let errorKind: ErrorKind | undefined;
     let check: CheckRecord | undefined;
     try {
+      d.applyBudget(budgetActive ? Math.max(1, remainingMs()) : 0);
       await agent.run(task.prompt);
       status = agent.lastRunStatus;
       if (task.check && status === "ok") {
         for (let attempt = 1; ; attempt++) {
-          check = await runCheckCommand({ command: task.check, cwd, timeoutMs: config.bashTimeoutMs, attempts: attempt });
+          const timeoutMs = budgetActive ? Math.max(1, Math.min(config.bashTimeoutMs, remainingMs())) : config.bashTimeoutMs;
+          check = await d.runCheck(task.check, timeoutMs, attempt);
           if (check.exit_code === 0) break;
-          if (!canRetryCheck({ attempts: attempt, maxRetries: checkRetries, startedAtMs: taskStarted, maxTimeMs: originalMaxTimeMs })) {
+          if (!canRetryCheck({ attempts: attempt, maxRetries: checkRetries, startedAtMs: started, maxTimeMs: totalBudgetMs })) {
             status = "check_failed";
             break;
           }
-          if (originalMaxTimeMs > 0) {
-            config.maxTimeMs = Math.max(1, originalMaxTimeMs - (Date.now() - taskStarted));
-          }
+          d.applyBudget(budgetActive ? Math.max(1, remainingMs()) : 0);
           await agent.run(buildCheckRepairPrompt(check));
           status = agent.lastRunStatus;
           if (status !== "ok") break;
@@ -694,51 +758,51 @@ export async function cmdBatch(argv: string[]): Promise<number> {
       error,
       errorKind,
       check,
-      report: diffReports(reportBefore, agent.getReport()),
+      report: agent.getReport(),
       turns: turns - turnsBefore,
-      durationMs: Date.now() - taskStarted,
+      durationMs: d.now() - taskStarted,
+      messages: agent.getMessages(),
     };
   };
 
-  const started = Date.now();
-  const batch = await executeBatch(tasks, runTask);
+  // Assemble a session record from whatever tasks have finished so far, so the
+  // same builder serves the incremental running saves and the final save.
+  const buildRecord = (status: RunStatus | BatchStatus, execs: TaskExecution[]): SessionRecord => {
+    const errored = execs.find((e) => e.error);
+    return {
+      id: sessionId,
+      createdAt: new Date(started).toISOString(),
+      cwd,
+      model: config.model,
+      prompt: `batch: ${tasks.map((t) => t.id).join(", ")}`,
+      status,
+      result: summarizeTasks(execs),
+      error: errored?.error,
+      errorKind: errored?.errorKind,
+      durationMs: d.now() - started,
+      turns,
+      toolCalls,
+      tokens: { prompt: promptTokens, completion: completionTokens },
+      report: mergeReports(execs.map((e) => e.report)),
+      messages: execs.flatMap((e) => (e.messages ? [...e.messages] : [])),
+      tasks: toTaskRecords(execs),
+    };
+  };
+
+  // Persist a running placeholder up front, then after every task, so a
+  // mid-batch SIGTERM still leaves the completed tasks on disk.
+  saveSession(buildRecord("running", []));
+  const batch = await executeBatch(tasks, runTask, (execs) => saveSession(buildRecord("running", execs)));
+
   // Final re-verification sweep re-runs each passed check once, catching an
   // earlier task's work being clobbered by a later one (bash/git side effects
-  // never show up in changed_files, so this is the only signal for it).
-  const recheck = (task: BatchTask) =>
-    runCheckCommand({ command: task.check!, cwd, timeoutMs: config.bashTimeoutMs, attempts: 1 });
+  // never show up in changed_files, so this is the only signal for it). It is
+  // lightweight (shell only), so it runs even when the budget is spent, using
+  // the full bash timeout rather than the (possibly zero) remaining budget.
+  const recheck = (task: BatchTask) => d.runCheck(task.check!, config.bashTimeoutMs, 1);
   const { executions, status } = await reverifyBatch(batch.executions, batch.fatal, recheck);
-  const durationMs = Date.now() - started;
 
-  const taskRecords: TaskRecord[] = executions.map((e) => ({
-    id: e.task.id,
-    kind: e.task.kind,
-    status: e.status,
-    durationMs: e.durationMs,
-    turns: e.turns,
-    check: e.check,
-    report: e.report,
-  }));
-  const errored = executions.find((e) => e.error);
-
-  const record: SessionRecord = {
-    id: sessionId,
-    createdAt: new Date(started).toISOString(),
-    cwd,
-    model: config.model,
-    prompt: `batch: ${tasks.map((t) => t.id).join(", ")}`,
-    status,
-    result: summarizeTasks(executions),
-    error: errored?.error,
-    errorKind: errored?.errorKind,
-    durationMs,
-    turns,
-    toolCalls,
-    tokens: { prompt: promptTokens, completion: completionTokens },
-    report: agent.getReport(),
-    messages: agent.getMessages(),
-    tasks: taskRecords,
-  };
+  const record = buildRecord(status, executions);
   saveSession(record);
 
   if (json) console.log(JSON.stringify(batchForJson(record)));
