@@ -450,6 +450,58 @@ function renderThreeWay(
   lines.push("");
 }
 
+// ---------- batch amortization (opt-in: only when the batchcli arm has run) ----------
+
+/**
+ * Appends a self-contained "Batch amortization" section comparing, per task, the
+ * baseline, the `claude-delegate` arm (one `lh -p -` per subtask in a session),
+ * and the `claude-delegate-batchcli` arm (all subtasks in one `lh batch` call).
+ * This isolates whether the batch primitive amortizes the fixed per-session
+ * startup cost (S in the round-5 S+T model) across a task's subtasks. Renders
+ * NOTHING when the batchcli arm has no summary, so the existing 2-way/3-way
+ * report stays byte-identical until that arm is actually run.
+ */
+function renderBatch(
+  lines: string[],
+  baseByTask: Map<string, Entry>,
+  delegByTask: Map<string, Entry>,
+  batchByTask: Map<string, Entry>,
+): void {
+  if (batchByTask.size === 0) return;
+  const tasks = [...batchByTask.keys()].sort();
+
+  lines.push("## Batch amortization (`lh batch`)");
+  lines.push("");
+  lines.push(
+    "Only tasks with a `claude-delegate-batchcli` entry appear here. This arm bundles a task's INDEPENDENT subtasks into ONE `lh batch` call, versus `seq lh` (the plain `claude-delegate` arm), which issues one `lh -p -` per subtask within a single session. The gap isolates whether the batch primitive amortizes the fixed per-session startup cost across subtasks (round-5 S+T model). Baseline is Sonnet solving the whole task itself.",
+  );
+  lines.push("");
+  lines.push(
+    "| task | pass (base / seq lh / batch) | base cost | seq-lh cost | batch cost | batch vs base | batch vs seq-lh | wall base/seq/batch | batch delegated? | batch local-side (tok / dur) |",
+  );
+  lines.push("|---|---|---|---|---|---|---|---|---|---|");
+
+  for (const task of tasks) {
+    const b = baseByTask.get(task);
+    const d = delegByTask.get(task);
+    const q = batchByTask.get(task);
+    const bCost = costOf("claude", b);
+    const dCost = costOf("claude-delegate", d);
+    const qCost = costOf("claude-delegate-batchcli", q);
+    lines.push(
+      `| ${task} | ${triple(b?.passed, d?.passed, q?.passed, pass)} | ${money(bCost)} | ${money(dCost)} | ${money(qCost)} | ` +
+        `${savedPct(bCost, qCost)} | ${savedPct(dCost, qCost)} | ${triple(b?.durationSec, d?.durationSec, q?.durationSec, secs)} | ` +
+        `${yesno(q?.delegated)} | ${localSide(q)} |`,
+    );
+  }
+
+  lines.push("");
+  lines.push(
+    "- **n=1 per cell**, as elsewhere — directional only. `batch local-side` rolls up the per-subtask `lh` sessions (tokens / wall / call count) the batch spawned; per-subtask verdicts are in `feedback.jsonl` under the arm's LH_HOME. A `batch delegated? = no` means the orchestrator ignored the nudge (did the work itself or never called `lh batch`), so that row is not a batch measurement.",
+  );
+  lines.push("");
+}
+
 // ---------- caveats ----------
 
 function renderCaveats(lines: string[], threeWay: boolean): void {
@@ -488,11 +540,13 @@ function main(): void {
   const baseArr = readSummary("claude");
   const delegArr = readSummary("claude-delegate");
   const haikuArr = readSummary("claude-delegate-haiku");
+  const batchArr = readSummary("claude-delegate-batchcli");
   const threeWay = haikuArr.length > 0;
 
   const baseByTask = new Map(baseArr.map((e) => [e.task, e]));
   const delegByTask = new Map(delegArr.map((e) => [e.task, e]));
   const haikuByTask = new Map(haikuArr.map((e) => [e.task, e]));
+  const batchByTask = new Map(batchArr.map((e) => [e.task, e]));
 
   const lines: string[] = [];
   lines.push(
@@ -510,7 +564,7 @@ function main(): void {
   );
   lines.push("");
 
-  const anyTasks = baseByTask.size + delegByTask.size + haikuByTask.size > 0;
+  const anyTasks = baseByTask.size + delegByTask.size + haikuByTask.size + batchByTask.size > 0;
   if (!anyTasks) {
     lines.push(
       "_No results found. Run the arms first, e.g. " +
@@ -519,9 +573,11 @@ function main(): void {
     );
   } else if (threeWay) {
     renderThreeWay(lines, baseByTask, delegByTask, haikuByTask);
+    renderBatch(lines, baseByTask, delegByTask, batchByTask);
     renderCaveats(lines, true);
   } else {
     renderTwoWay(lines, baseByTask, delegByTask);
+    renderBatch(lines, baseByTask, delegByTask, batchByTask);
     renderCaveats(lines, false);
   }
 

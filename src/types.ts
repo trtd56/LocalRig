@@ -133,7 +133,9 @@ export interface ChatResponse {
 
 // ---------- Run outcome ----------
 
-/** Why a run() call ended. Used for CLI exit codes and session records. */
+/** Why a run() call ended. Used for CLI exit codes and session records.
+ *  "not_run" is not produced by run() itself — `lh batch` stamps it on tasks
+ *  that never started because a fatal earlier task aborted the batch. */
 export type RunStatus =
   | "ok"
   | "check_failed"
@@ -144,6 +146,7 @@ export type RunStatus =
   | "loop_abort"
   | "interrupted"
   | "empty"
+  | "not_run"
   | "error";
 
 /**

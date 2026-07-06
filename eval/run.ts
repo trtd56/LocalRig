@@ -60,6 +60,33 @@ export const DELEGATE_NUDGE = `This run is a delegation measurement: you MUST ro
 Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
 
 /**
+ * System-prompt append for the `claude-delegate-batchcli` arm. Same
+ * delegation-first contract as DELEGATE_NUDGE (MUST delegate ALL work / foreground
+ * / Bash timeout 2100000 ms / --max-time 1800 / a machine-checkable acceptance
+ * command per subtask / `lh feedback` / no edits before a delegation returns) —
+ * the ONLY intended difference is the delegation PROCEDURE. Instead of one
+ * `lh -p -` call per subtask, the orchestrator bundles all independent subtasks
+ * into a SINGLE `lh batch` call driven by a JSON manifest on stdin, so the fixed
+ * session-startup cost (the `S` in the round-5 S+T decomposition, see REPORT.md 課題1)
+ * is paid once and amortized across the batch. This is the first-class-primitive
+ * counterpart to the round-5 measurement, which re-used this same DELEGATE_NUDGE
+ * to make Claude issue three sequential `lh -p -` calls in one session by hand.
+ * Measured on the `batch-trio` fixture. Note stdin carries the manifest (via
+ * `--tasks -` + heredoc), exactly as DELEGATE_NUDGE's `lh -p -` carries the
+ * prompt on stdin, so there is no `< /dev/null` here (that belongs to the haiku
+ * arm, whose work order is a CLI arg). Injected ONLY via
+ * `claude --append-system-prompt`; the task-facing prompt stays byte-identical to
+ * the baseline.
+ */
+export const BATCHCLI_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
+1. Decompose the task into its INDEPENDENT subtasks and delegate them ALL IN ONE \`lh batch\` call via Bash with a stdin heredoc: lh batch --tasks - --json --cwd <absolute cwd> --max-time 1800
+   The heredoc body is a JSON manifest: {"tasks":[{"id":"<slug>","kind":"<rename|tests|docs|types|perf|bugfix|other>","check":"<exact acceptance command for THIS subtask only>","prompt":"<work order>"}, …]}. Every subtask MUST carry an \`id\`, a \`kind\`, and a machine-verifiable \`check\` command scoped to that subtask alone. Write each \`prompt\` like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done; for investigation/triage subtasks, tell the local agent to write its findings to the file the task asks for. Do NOT call \`lh -p\` once per subtask, and do NOT hand-assemble one mega-prompt that tells a single local agent to do everything — bundling the independent subtasks into one \`lh batch\` call is the entire point of this arm. Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-20 minutes per subtask and the batch runs them serially); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment.
+2. When it returns, parse the JSON (session_id, status, tasks[]). For each entry in tasks[], read its \`status\` and \`check.exit_code\`. If a subtask's check.exit_code===0, do not rerun that acceptance command unless it is flaky or security-sensitive; inspect that subtask's \`changed_files\` plus git diff for unexpected changes.
+3. Verify each subtask cheaply (its \`changed_files\` / git diff / read touched files). If a subtask's \`status\` is not ok or its \`check\` failed, re-run that acceptance command yourself to confirm. Only if a delegated subtask is broken or incomplete may you fix the remaining issues yourself with minimal edits, or re-delegate just that subtask. Do not delegate the same subtask more than twice.
+4. Record a verdict FOR EACH subtask, keyed by its id: lh feedback <session_id> --task <id> pass|fail --source claude-code --notes "<short reason>".
+Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
+
+/**
  * System-prompt append for the `claude-delegate-async` arm. Same delegation-first
  * contract as DELEGATE_NUDGE (MUST delegate / foreground / --check / lh feedback /
  * no edits before a delegation returns) — the ONLY intended difference is the
@@ -435,6 +462,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     // comparable — the arm's only difference is which worker it delegates to.
     const args = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"];
     if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
+    else if (agent === "claude-delegate-batchcli") args.push("--append-system-prompt", BATCHCLI_NUDGE);
     else if (agent === "claude-delegate-async") args.push("--append-system-prompt", ASYNC_DELEGATE_NUDGE);
     else if (agent === "claude-delegate-haiku") args.push("--append-system-prompt", HAIKU_DELEGATE_NUDGE);
     else if (agent === "claude-delegate-pair-sync") args.push("--append-system-prompt", SYNC_PAIR_NUDGE);

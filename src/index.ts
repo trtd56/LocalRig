@@ -1,14 +1,25 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
+import * as fs from "node:fs";
 import * as readline from "node:readline";
 import * as path from "node:path";
 import { Agent } from "./agent.ts";
+import {
+  BatchConfigError,
+  diffReports,
+  executeBatch,
+  parseManifest,
+  reverifyBatch,
+  type BatchTask,
+  type TaskExecution,
+} from "./batch.ts";
 import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
 import { defaultConfig, type Config } from "./config.ts";
 import { createRenderer, c } from "./ui/render.ts";
-import type { AgentEvent, ChatMessage, ErrorKind, RunStatus } from "./types.ts";
+import type { AgentEvent, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
 import {
   appendFeedback,
+  type BatchStatus,
   type CheckRecord,
   computeStats,
   latestSessionId,
@@ -20,6 +31,7 @@ import {
   restoreTranscript,
   saveSession,
   type SessionRecord,
+  type TaskRecord,
 } from "./session.ts";
 
 const HELP = `LocalRig — coding agent for local LLMs via Ollama
@@ -35,6 +47,9 @@ Usage:
                             continue with "follow-up" as the next instruction
   lh submit -p "task" --json
                             start a detached one-shot and return immediately
+  lh batch --tasks <file|-> [--json]
+                            run several independent tasks in one session (one
+                            Agent, shared cwd); per-task status/check/report
   lh wait <id> [--timeout 1200] [--json]
                             wait for a submitted session to finish
   lh poll <id> [--json]     inspect a submitted session without blocking
@@ -63,6 +78,18 @@ One-shot flags:
   --check-retries N         repair attempts after a failing check (default: 2)
   --kind KIND               tag this delegation (recommended: rename, tests,
                             docs, types, perf, bugfix, other)
+
+Batch flags:
+  --tasks FILE|-            JSON manifest of tasks (- reads stdin). Shape:
+                            {"tasks":[{"id","prompt","kind?","check?",
+                            "check_retries?"}]} (a bare [...] array also works).
+                            Tasks run in order in one session; --cwd, --max-time
+                            (per task), --json, --quiet, -v, --auto/--yolo apply.
+                            After all tasks, every passed check is re-run once
+                            (final sweep): a task whose check regressed (a later
+                            task clobbered its work) is downgraded to check_failed
+                            with "regressed": true. Grade with:
+                            lh feedback <id> --task <task-id> pass|fail
   --resume ID               continue a saved session (one-shot only): restore
                             its transcript, append the prompt as a follow-up,
                             and resume the agent loop. Records resumed_from and
@@ -87,6 +114,7 @@ interface CliOptions {
   kind?: string;
   sessionId?: string;
   resumeFrom?: string;
+  tasksFile?: string;
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -151,6 +179,9 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--resume":
         opts.resumeFrom = argv[++i];
         break;
+      case "--tasks":
+        opts.tasksFile = argv[++i];
+        break;
       case "--json":
         opts.json = true;
         break;
@@ -187,21 +218,23 @@ async function readStdin(): Promise<string> {
 
 // ---------- subcommands ----------
 
-function cmdFeedback(argv: string[]): number {
+export function cmdFeedback(argv: string[]): number {
   let id: string | undefined;
+  let taskId: string | undefined;
   let verdict: "pass" | "fail" | undefined;
   let notes: string | undefined;
   let source: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     if (a === "--last") id = latestSessionId() ?? undefined;
+    else if (a === "--task") taskId = argv[++i];
     else if (a === "--notes") notes = argv[++i];
     else if (a === "--source") source = argv[++i];
     else if (a === "pass" || a === "fail") verdict = a;
     else if (!a.startsWith("-") && id === undefined) id = a;
   }
   if (!id || !verdict) {
-    console.error('usage: lh feedback <session-id|--last> <pass|fail> [--notes "why"] [--source name]');
+    console.error('usage: lh feedback <session-id|--last> [--task <id>] <pass|fail> [--notes "why"] [--source name]');
     return 1;
   }
   const session = loadSession(id);
@@ -209,7 +242,31 @@ function cmdFeedback(argv: string[]): number {
     console.error(`unknown session: ${id} (see \`lh sessions\`)`);
     return 1;
   }
-  appendFeedback({ sessionId: id, verdict, kind: session.kind, notes, source, createdAt: new Date().toISOString() });
+  const createdAt = new Date().toISOString();
+
+  // --task grades a single task of a batch session with that task's own kind.
+  if (taskId !== undefined) {
+    const task = session.tasks?.find((t) => t.id === taskId);
+    if (!task) {
+      console.error(`unknown task id: ${taskId} in session ${id} (see its tasks with \`lh poll ${id} --json\`)`);
+      return 1;
+    }
+    appendFeedback({ sessionId: id, taskId, verdict, kind: task.kind, notes, source, createdAt });
+    console.log(`recorded: ${id} --task ${taskId} ${verdict}${notes ? ` — ${notes}` : ""}`);
+    return 0;
+  }
+
+  // A bare verdict on a batch session fans out to every task, each carrying its
+  // own kind, so by-kind stats stay accurate.
+  if (session.tasks && session.tasks.length > 0) {
+    for (const task of session.tasks) {
+      appendFeedback({ sessionId: id, taskId: task.id, verdict, kind: task.kind, notes, source, createdAt });
+    }
+    console.log(`recorded: ${id} ${verdict} — fanned out to ${session.tasks.length} tasks${notes ? ` — ${notes}` : ""}`);
+    return 0;
+  }
+
+  appendFeedback({ sessionId: id, verdict, kind: session.kind, notes, source, createdAt });
   console.log(`recorded: ${id} ${verdict}${notes ? ` — ${notes}` : ""}`);
   return 0;
 }
@@ -285,13 +342,39 @@ function classifyError(message: string): ErrorKind {
   return "internal";
 }
 
-function reportForJson(record: SessionRecord) {
-  return record.report
+function reportForJson(report: RunReport | undefined) {
+  return report
     ? {
-        changed_files: record.report.changedFiles,
-        commands_run: record.report.commandsRun,
+        changed_files: report.changedFiles,
+        commands_run: report.commandsRun,
       }
     : { changed_files: [], commands_run: [] };
+}
+
+export function taskForJson(task: TaskRecord) {
+  return {
+    id: task.id,
+    status: task.status,
+    kind: task.kind,
+    duration_ms: task.durationMs,
+    turns: task.turns,
+    check: task.check,
+    ...reportForJson(task.report),
+  };
+}
+
+/** Batch `--json`: the task-oriented view (distinct from a one-shot session). */
+function batchForJson(record: SessionRecord) {
+  return {
+    session_id: record.id,
+    status: record.status,
+    duration_ms: record.durationMs,
+    model: record.model,
+    cwd: record.cwd,
+    tasks: (record.tasks ?? []).map(taskForJson),
+    tokens: record.tokens,
+    feedback_command: `lh feedback ${record.id} --task <id> <pass|fail> --notes "<verified how / what went wrong>"`,
+  };
 }
 
 function sessionForJson(record: SessionRecord) {
@@ -311,7 +394,8 @@ function sessionForJson(record: SessionRecord) {
     resumed_from: record.resumedFrom,
     pid: record.pid,
     check: record.check,
-    report: reportForJson(record),
+    report: reportForJson(record.report),
+    tasks: record.tasks ? record.tasks.map(taskForJson) : undefined,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<verified how / what went wrong>"`,
   };
 }
@@ -333,7 +417,7 @@ function failResume(opts: CliOptions, err: unknown): never {
   process.exit(1);
 }
 
-function statusExitCode(status: RunStatus): number {
+function statusExitCode(status: RunStatus | BatchStatus): number {
   if (status === "ok" || status === "running") return 0;
   if (status === "interrupted") return 130;
   return 1;
@@ -472,9 +556,203 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   process.exit(statusExitCode(status));
 }
 
+// ---------- batch ----------
+
+function emitBatchConfigError(json: boolean, message: string): number {
+  if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+  else process.stderr.write(c.red(`error: ${message}`) + "\n");
+  return 1;
+}
+
+function summarizeTasks(executions: TaskExecution[]): string {
+  const counts = new Map<string, number>();
+  for (const e of executions) counts.set(e.status, (counts.get(e.status) ?? 0) + 1);
+  const parts = [...counts.entries()].map(([s, n]) => `${n} ${s}`);
+  return `${executions.length} task${executions.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
+}
+
+function printBatchSummary(record: SessionRecord, executions: TaskExecution[]): void {
+  for (const e of executions) {
+    const parts = [`  ${e.task.id.padEnd(16)} ${e.status.padEnd(14)} ${Math.round(e.durationMs / 1000)}s`];
+    if (e.check) parts.push(`check ${e.check.exit_code === 0 ? "passed" : e.check.regressed ? "regressed" : "failed"}`);
+    if (e.report.changedFiles.length > 0) parts.push(`${e.report.changedFiles.length} file(s)`);
+    if (e.error) parts.push(`error: ${e.error}`);
+    process.stdout.write(parts.join("  ") + "\n");
+  }
+  process.stderr.write(
+    c.dim(
+      `session ${record.id} (${record.status}, ${Math.round(record.durationMs / 1000)}s) — ` +
+        `grade tasks: lh feedback ${record.id} --task <id> pass|fail`,
+    ) + "\n",
+  );
+}
+
+/**
+ * `lh batch`: run several independent tasks in one agent session (amortizing
+ * session start-up). Each task's prompt is injected as the next user message on
+ * the shared transcript, run to completion, then optionally re-verified with
+ * its own `check` loop scoped to the task. A fatal task aborts the batch and
+ * leaves the rest "not_run"; other failures fall through to the next task.
+ */
+export async function cmdBatch(argv: string[]): Promise<number> {
+  const opts = parseArgs(argv);
+  const json = opts.json;
+
+  // Batch is synchronous and self-contained: no detached/resume variants (v1).
+  if (opts.resumeFrom !== undefined) {
+    return emitBatchConfigError(json, "batch does not support --resume (a batch session cannot be resumed in v1)");
+  }
+  if (!opts.tasksFile) {
+    console.error("usage: lh batch --tasks <file|-> [--cwd DIR] [--json] [--auto|--yolo] [--max-time SEC] [--quiet] [-v]");
+    return 1;
+  }
+
+  let manifestText: string;
+  try {
+    manifestText = opts.tasksFile === "-" ? await readStdin() : fs.readFileSync(path.resolve(opts.tasksFile), "utf8");
+  } catch (err) {
+    return emitBatchConfigError(json, `cannot read manifest: ${err instanceof Error ? err.message : String(err)}`);
+  }
+
+  let tasks: BatchTask[];
+  try {
+    tasks = parseManifest(manifestText);
+  } catch (err) {
+    if (err instanceof BatchConfigError) return emitBatchConfigError(json, err.message);
+    throw err;
+  }
+
+  const { config } = opts;
+  if (!opts.permissionModeSet) config.permissionMode = "yolo";
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const sessionId = opts.sessionId ?? newSessionId();
+  const originalMaxTimeMs = config.maxTimeMs;
+  const denyPermission = async () => false;
+
+  const showProgress = json ? opts.verbose : !opts.quiet;
+  const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
+  let turns = 0;
+  let toolCalls = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  const onEvent = (e: AgentEvent) => {
+    if (e.type === "turn_end") turns++;
+    else if (e.type === "tool_start") toolCalls++;
+    else if (e.type === "usage") {
+      promptTokens = e.promptTokens;
+      completionTokens += e.evalTokens;
+    }
+    progress?.(e);
+  };
+
+  const agent = new Agent(config, cwd, onEvent, denyPermission);
+  process.on("SIGINT", () => {
+    agent.interrupt();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  });
+
+  // Run one task: agent loop to completion, then its own check-repair loop
+  // (per-task retry count and per-task wall-clock budget). The report slice is
+  // the diff of the cumulative session report across the task's boundary.
+  const runTask = async (task: BatchTask): Promise<TaskExecution> => {
+    const taskStarted = Date.now();
+    const turnsBefore = turns;
+    const reportBefore = agent.getReport();
+    config.maxTimeMs = originalMaxTimeMs; // fresh budget for this task
+    const checkRetries = task.checkRetries ?? 2;
+    let status: RunStatus = "error";
+    let error: string | undefined;
+    let errorKind: ErrorKind | undefined;
+    let check: CheckRecord | undefined;
+    try {
+      await agent.run(task.prompt);
+      status = agent.lastRunStatus;
+      if (task.check && status === "ok") {
+        for (let attempt = 1; ; attempt++) {
+          check = await runCheckCommand({ command: task.check, cwd, timeoutMs: config.bashTimeoutMs, attempts: attempt });
+          if (check.exit_code === 0) break;
+          if (!canRetryCheck({ attempts: attempt, maxRetries: checkRetries, startedAtMs: taskStarted, maxTimeMs: originalMaxTimeMs })) {
+            status = "check_failed";
+            break;
+          }
+          if (originalMaxTimeMs > 0) {
+            config.maxTimeMs = Math.max(1, originalMaxTimeMs - (Date.now() - taskStarted));
+          }
+          await agent.run(buildCheckRepairPrompt(check));
+          status = agent.lastRunStatus;
+          if (status !== "ok") break;
+        }
+      }
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+      errorKind = classifyError(error);
+      status = "error";
+    }
+    return {
+      task,
+      status,
+      error,
+      errorKind,
+      check,
+      report: diffReports(reportBefore, agent.getReport()),
+      turns: turns - turnsBefore,
+      durationMs: Date.now() - taskStarted,
+    };
+  };
+
+  const started = Date.now();
+  const batch = await executeBatch(tasks, runTask);
+  // Final re-verification sweep re-runs each passed check once, catching an
+  // earlier task's work being clobbered by a later one (bash/git side effects
+  // never show up in changed_files, so this is the only signal for it).
+  const recheck = (task: BatchTask) =>
+    runCheckCommand({ command: task.check!, cwd, timeoutMs: config.bashTimeoutMs, attempts: 1 });
+  const { executions, status } = await reverifyBatch(batch.executions, batch.fatal, recheck);
+  const durationMs = Date.now() - started;
+
+  const taskRecords: TaskRecord[] = executions.map((e) => ({
+    id: e.task.id,
+    kind: e.task.kind,
+    status: e.status,
+    durationMs: e.durationMs,
+    turns: e.turns,
+    check: e.check,
+    report: e.report,
+  }));
+  const errored = executions.find((e) => e.error);
+
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date(started).toISOString(),
+    cwd,
+    model: config.model,
+    prompt: `batch: ${tasks.map((t) => t.id).join(", ")}`,
+    status,
+    result: summarizeTasks(executions),
+    error: errored?.error,
+    errorKind: errored?.errorKind,
+    durationMs,
+    turns,
+    toolCalls,
+    tokens: { prompt: promptTokens, completion: completionTokens },
+    report: agent.getReport(),
+    messages: agent.getMessages(),
+    tasks: taskRecords,
+  };
+  saveSession(record);
+
+  if (json) console.log(JSON.stringify(batchForJson(record)));
+  else printBatchSummary(record, executions);
+  return statusExitCode(status);
+}
+
 // ---------- async submit / wait / poll ----------
 
-async function cmdSubmit(argv: string[]): Promise<number> {
+export async function cmdSubmit(argv: string[]): Promise<number> {
+  if (argv[0] === "batch") {
+    console.error("error: submit does not support batch; run `lh batch` directly (it is synchronous — detached batch is not available in v1)");
+    return 1;
+  }
   const opts = parseArgs(argv);
   if (opts.prompt === "-") opts.prompt = await readStdin();
   if (opts.prompt === undefined || !opts.prompt.trim()) {
@@ -704,6 +982,8 @@ async function main() {
       process.exit(cmdSessions(argv.slice(1)));
     case "stats":
       process.exit(cmdStats(argv.slice(1)));
+    case "batch":
+      process.exit(await cmdBatch(argv.slice(1)));
   }
 
   const opts = parseArgs(argv);
