@@ -1,0 +1,6 @@
+{
+  "name": "add-feature",
+  "prompt": "src/cli.ts の formatOutput に JSON 出力対応を追加してください。要件: format 引数が \"json\" のとき、結果を {\"items\": [...], \"count\": N} 形式のJSON文字列(インデント2)で返す。\"table\" のときは既存の動作を維持。不正な format 値のときは Error を投げる。test/cli.test.ts に期待仕様のテストがあります(現在失敗します)。テストファイルは変更せず、bun test が全て通るようにしてください。",
+  "verify": "bun test",
+  "checks": ["src/cli.ts must be modified", "test/cli.test.ts must NOT be modified"]
+}

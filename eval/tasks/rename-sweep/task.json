@@ -1,0 +1,12 @@
+{
+  "name": "rename-sweep",
+  "prompt": "このプロジェクトでは src/lib/fmt.ts の fmtDate(d, pattern) / fmtNum(n, decimals) が非推奨になり、src/lib/format.ts の新API formatDate({date, pattern}) / formatNum({value, decimals}) に置き換えることになりました。src/ 以下で旧APIを使っている箇所を全て見つけて新APIへ移行し、完了後に src/lib/fmt.ts を削除してください。挙動は変えないこと(引数の対応付けを間違えないよう注意してください)。src/lib/format.ts とテストファイルは変更禁止です。bun test が全て通ることを確認してください。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "all 12 caller files migrated to src/lib/format.ts",
+    "src/lib/fmt.ts deleted",
+    "no fmtDate/fmtNum call sites remain in src/",
+    "src/lib/format.ts unchanged (sha256)",
+    "bun test passes"
+  ]
+}

@@ -1,0 +1,9 @@
+[
+  { "user": "aki", "action": "push", "metadata": { "tags": ["deploy", "review"] } },
+  { "user": "ben", "action": "comment" },
+  { "user": "aki", "action": "merge", "metadata": { "tags": ["review"] } },
+  { "user": "cho", "action": "push", "metadata": { "tags": ["deploy"] } },
+  { "user": "ben", "action": "push", "metadata": {} },
+  { "user": "cho", "action": "test", "metadata": { "tags": ["ci", "review"] } },
+  { "user": "aki", "action": "close" }
+]

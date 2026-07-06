@@ -1,0 +1,10 @@
+{
+  "name": "perf-fix",
+  "prompt": "test/dupes.test.ts の \"large input\" テストが、大きな入力に対して findDuplicates の処理が遅すぎて制限時間内に完了せず失敗します。テストファイルは変更せず、src/dupes.ts の findDuplicates のアルゴリズムを改善して全てのテストを通してください。関数のシグネチャと仕様(2回以上出現する要素を初出順に1回ずつ返す)は維持すること。修正後に bun test で確認してください。",
+  "verify": "bun test",
+  "checks": [
+    "src/dupes.ts must be modified",
+    "test files must NOT be modified",
+    "large-input test passes within its time budget"
+  ]
+}

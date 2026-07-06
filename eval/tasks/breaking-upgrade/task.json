@@ -1,0 +1,12 @@
+{
+  "name": "breaking-upgrade",
+  "prompt": "このプロジェクトが使っている内部ストレージライブラリがメジャーアップグレードされました。src/lib/storage.ts が旧API(v1、非推奨)、src/lib/storage2.ts が新API(v2)の実装です。まず CHANGELOG.md を読んで v1→v2 の破壊的変更を理解してください。そのうえで src/config.ts, src/session.ts, src/cache.ts, src/preferences.ts, src/rate-limiter.ts の5ファイルにある v1 の呼び出し箇所を全て v2 へ移行し、移行完了後に src/lib/storage.ts を削除してください。単純な import 先とシグネチャの機械的な置き換えだけでは不十分です。v1 は失敗時に例外を投げますが v2 は例外を投げず Result 型({ ok: true, value } または { ok: false, error })を返すため、既存の try/catch によるエラー処理を Result の分岐に書き換え、各呼び出し箇所が持つエラー処理の意味(呼び出し元から見た挙動)を保ってください。また v2 ではオプションのデフォルト値が変わった箇所があるため、旧挙動を維持するために明示的にオプションを指定すべき箇所がないか CHANGELOG.md を確認してください。テストファイルと CHANGELOG.md は変更しないでください。bun test が全て通ることを確認してください。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "src/config.ts, src/session.ts, src/cache.ts, src/preferences.ts, src/rate-limiter.ts が全て src/lib/storage2.ts ベースに移行されている",
+    "src/lib/storage.ts が削除されている",
+    "src/ 以下に v1 (lib/storage) への import が残っていない",
+    "CHANGELOG.md が変更されていない",
+    "bun test が全て通る"
+  ]
+}

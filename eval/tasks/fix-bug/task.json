@@ -1,0 +1,6 @@
+{
+  "name": "fix-bug",
+  "prompt": "このプロジェクトのテストが失敗しています。バグを見つけて修正してください。テストファイル自体は変更しないでください。修正後に bun test で確認してください。",
+  "verify": "bun test",
+  "checks": ["src/stats.ts must be modified", "test/stats.test.ts must NOT be modified"]
+}

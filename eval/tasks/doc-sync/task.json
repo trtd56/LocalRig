@@ -1,0 +1,6 @@
+{
+  "name": "doc-sync",
+  "prompt": "README.md の Usage / Options セクションが src/cli.ts の実装と食い違っています。実装を正として README.md を修正し、オプション名・デフォルト値・使用例が実装と一致するようにしてください。実装に存在するのに README に記載が無いオプションも追記してください。ソースコード(src/)とテスト(test/)は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": ["README matches implementation (flags, defaults, example)", "src/cli.ts unchanged (sha256)", "bun test passes"]
+}

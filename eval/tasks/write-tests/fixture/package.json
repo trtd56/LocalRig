@@ -1,0 +1,5 @@
+{
+  "name": "write-tests-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

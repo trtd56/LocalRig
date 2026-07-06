@@ -1,0 +1,6 @@
+{
+  "name": "async-race",
+  "prompt": "このプロジェクトの AsyncCache (src/cache.ts) には、並行アクセス時にのみ発生する不具合があります。bun test でテストを実行して失敗を確認し、原因を調べて src/cache.ts を修正してください。テストファイル自体は変更しないでください。修正後に bun test で全テストが通ることを確認してください。",
+  "verify": "bun test",
+  "checks": ["src/cache.ts must be modified", "test/*.ts must NOT be modified"]
+}

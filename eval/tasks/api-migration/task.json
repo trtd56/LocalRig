@@ -1,0 +1,6 @@
+{
+  "name": "api-migration",
+  "prompt": "このプロジェクトでは src/lib/legacy-format.ts の formatMoney(amount, currency) が非推奨になり、src/lib/money.ts の新API formatMoney({amount, currency}) に置き換えることになりました。src/ 以下で legacy-format を使っている箇所を全て見つけて新APIへ移行し、移行完了後に src/lib/legacy-format.ts を削除してください。test/format.test.ts に新APIベースの期待仕様があります(現在は一部失敗します)。テストファイルは変更せず、bun test が全て通るようにしてください。",
+  "verify": "bash test/verify.sh",
+  "checks": ["all callers migrated to src/lib/money.ts", "src/lib/legacy-format.ts deleted", "no 'legacy-format' references remain in src/"]
+}

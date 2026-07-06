@@ -1,0 +1,6 @@
+{
+  "name": "follow-conventions",
+  "prompt": "このプロジェクトの CLAUDE.md にコーディング規約が書かれています。規約を確認し、それに従って src/parse-duration.ts を新規実装してください。仕様: parseDuration(s: string): number をエクスポートし、\"90s\" → 90000、\"5m\" → 300000、\"2h\" → 7200000 のように「数値+単位(s/m/h)」の文字列をミリ秒に変換する。それ以外の入力はエラーを投げる。test/parse-duration.test.ts が通ること。テストファイルと CLAUDE.md は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": ["tests pass", "src/parse-duration.ts has a '// why:' comment", "throws AppError, never bare Error"]
+}

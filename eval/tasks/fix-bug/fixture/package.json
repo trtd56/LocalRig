@@ -1,0 +1,5 @@
+{
+  "name": "fix-bug-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

@@ -1,0 +1,9 @@
+{
+  "name": "test-triage",
+  "prompt": "このプロジェクトは複数のテストが失敗しています。失敗の原因は1つとは限りません。ソースコードを読んで、独立した根本原因をすべて特定し、修正してください。1箇所だけ直せば全部直るとは限らないので、直したつもりでも必ず bun test を再実行して残りの失敗を確認してください。テストファイル自体(test/ 以下)は変更しないでください。修正後に bun test で全テストが通ることを確認してください。",
+  "verify": "bun test",
+  "checks": [
+    "src/utils/strings.ts, src/utils/dates.ts, src/modules/catalog.ts must be modified",
+    "test/*.test.ts must NOT be modified"
+  ]
+}

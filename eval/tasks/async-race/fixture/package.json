@@ -1,0 +1,5 @@
+{
+  "name": "async-race-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "large-codebase",
+  "prompt": "この在庫・注文管理システムのテストがいくつか失敗しています。コードベースは大きいので、必要な箇所を調査して失敗の根本原因を特定し、修正してください。複数の失敗に共通する根本原因を1箇所直すのが正しい解であり、呼び出し側ごとの場当たり的なパッチは避けてください。テストファイル(test/ 以下)は変更しないでください。修正後に bun test を実行し、全てのテストが通ることを確認してください。",
+  "verify": "bash test/verify.sh",
+  "checks": ["bun test passes", "root cause fixed in the shared utility, not patched per caller", "test files must NOT be modified"]
+}

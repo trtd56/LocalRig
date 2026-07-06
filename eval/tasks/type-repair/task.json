@@ -1,0 +1,6 @@
+{
+  "name": "type-repair",
+  "prompt": "このプロジェクトは `bunx tsc --noEmit` を実行すると型エラーで失敗します。エラーを全て解消してください。ただし any 型・@ts-ignore・@ts-expect-error・as によるキャストの追加で回避することは禁止です。null ガードや型のナローイングなど、正しい修正を行ってください。挙動を変えないこと(bun test は現在も通っており、修正後も通る必要があります)。tsconfig.json と test/ 以下は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": ["bunx tsc --noEmit passes", "bun test passes", "no any/@ts-ignore/@ts-expect-error/as-casts added", "tsconfig.json unchanged"]
+}

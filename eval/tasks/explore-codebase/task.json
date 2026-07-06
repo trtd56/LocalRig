@@ -1,0 +1,6 @@
+{
+  "name": "explore-codebase",
+  "prompt": "このコードベースを調査して、以下の3つの質問の答えを ANSWER.md というファイルに書いてください。ソースコードの変更は不要です。ANSWER.md のフォーマットは各行 `Q1: <答え>`、`Q2: <答え>`、`Q3: <答え>` としてください。Q1: 定数 DEFAULT_TIMEOUT_MS の値は? Q2: 関数 parsePriority が定義されているファイルの相対パスは? Q3: 関数 redactSecrets を(定義しているファイル自身を除いて)呼び出しているファイルは何個ありますか?",
+  "verify": "bash test/verify.sh",
+  "checks": ["ANSWER.md contains 45000, utils/priority.ts, and 2", "source files must NOT be modified"]
+}

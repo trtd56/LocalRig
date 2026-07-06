@@ -1,0 +1,6 @@
+{
+  "name": "refactor",
+  "prompt": "src/user.ts と src/order.ts に重複しているメールアドレス検証ロジックを src/validation.ts という新しいモジュールに抽出してください。validation.ts は isValidEmail(email: string): boolean をエクスポートし、user.ts と order.ts は両方ともそれをインポートして使うように書き換えてください。既存のテストは全て通り続ける必要があり、test/validation.test.ts のテスト(現在は validation.ts が無いため失敗)も通るようにしてください。テストファイルは変更しないでください。",
+  "verify": "bun test",
+  "checks": ["src/validation.ts must exist", "src/user.ts and src/order.ts must import from validation"]
+}

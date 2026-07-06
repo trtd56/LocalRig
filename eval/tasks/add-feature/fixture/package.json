@@ -1,0 +1,5 @@
+{
+  "name": "add-feature-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

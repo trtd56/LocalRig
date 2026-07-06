@@ -1,0 +1,6 @@
+{
+  "name": "write-tests",
+  "prompt": "src/slug.ts の slugify と truncateWords に対するユニットテストを test/slug.test.ts に新規作成してください。実装とその JSDoc コメントを仕様として読み、境界ケース(大文字小文字、先頭末尾の記号、空文字、ちょうど maxWords 語、maxWords が 0 以下のときの Error など)を含めて網羅してください。テストの十分性はミューテーションテストで判定します: test/mutants/ にある 4 つの変異版(slug.m1.ts〜slug.m4.ts)のどれで src/slug.ts を置き換えても、あなたのテストが 1 つ以上失敗する必要があります。src/ のコード、test/mutants/ 以下、test/verify.sh は変更禁止です。bun test が通ることを確認してください。",
+  "verify": "bash test/verify.sh",
+  "checks": ["test/slug.test.ts created", "all 4 mutants killed", "src/slug.ts unchanged (sha256)", "test files not modified"]
+}

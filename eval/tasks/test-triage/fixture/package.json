@@ -1,0 +1,5 @@
+{
+  "name": "test-triage-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

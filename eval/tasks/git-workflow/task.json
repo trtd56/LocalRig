@@ -1,0 +1,6 @@
+{
+  "name": "git-workflow",
+  "prompt": "このディレクトリで次の手順を実行してください: (1) git リポジトリを初期化し、現在の状態を 'initial' というメッセージでコミットする。(2) bun test で失敗しているテストの原因となっているバグを src/ 内で修正する(テストファイルは変更禁止)。(3) 修正を 'fix' という単語を含むメッセージで別コミットにする。最終的に bun test が全て通り、未コミットの変更が残っていない状態にしてください。",
+  "verify": "bash test/verify.sh",
+  "checks": ["git repo with >= 2 commits, one containing 'fix'", "clean working tree", "bun test passes"]
+}

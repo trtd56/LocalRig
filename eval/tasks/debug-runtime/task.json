@@ -1,0 +1,6 @@
+{
+  "name": "debug-runtime",
+  "prompt": "`bun src/main.ts data/events.json` を実行するとクラッシュします。実際にコマンドを実行してエラーを確認し、原因を特定して src/main.ts を修正してください。修正後、同じコマンドが正常終了して集計結果が出力されることを確認してください。data/ 以下のデータファイルと test/ 以下は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": ["bun src/main.ts data/events.json exits 0 with correct tag counts", "data/events.json must NOT be modified"]
+}

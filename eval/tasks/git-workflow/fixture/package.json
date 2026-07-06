@@ -1,0 +1,5 @@
+{
+  "name": "git-workflow-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

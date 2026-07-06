@@ -1,0 +1,5 @@
+{
+  "name": "breaking-upgrade-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

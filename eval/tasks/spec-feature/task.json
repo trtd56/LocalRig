@@ -1,0 +1,6 @@
+{
+  "name": "spec-feature",
+  "prompt": "このプロジェクトはタスク管理アプリです。ルートの SPEC.md に検索クエリ言語の仕様があります。仕様を読み、src/query/parse.ts(クエリ文字列を構造化フィルタへ変換)と src/query/apply.ts(フィルタをタスク列に適用)を新規実装し、src/search.ts の search(tasks, query) をこの 2 つを使う実装に書き換えてください。status/tag フィルタ、除外(-)、裸の単語による部分一致、引用符フレーズ、不正キーや不正なステータス値での Error、空クエリなど、SPEC.md の全仕様を満たすこと。test/query.test.ts が現在失敗するので通るようにし、既存の test/store.test.ts も壊さないこと。テストファイルと SPEC.md は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": ["bun test passes", "src/query/parse.ts and src/query/apply.ts created", "search() imports both new modules", "SPEC.md unchanged (sha256)", "test files not modified"]
+}

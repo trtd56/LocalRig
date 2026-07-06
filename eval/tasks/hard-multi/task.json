@@ -1,0 +1,6 @@
+{
+  "name": "hard-multi",
+  "prompt": "このプロジェクトのテストは一部失敗しています。3つの作業が必要です: (1) src/queue.ts の processBatch が常に空配列を返すバグを修正、(2) src/retry.ts の withRetry が maxAttempts 回試行すべきところ1回少ないバグを修正、(3) test/priority.test.ts が期待する src/priority.ts モジュール(sortByPriority: 優先度 high > medium > low の安定ソート)を新規実装。テストファイルは変更禁止。全テストが通ることを bun test で確認してください。",
+  "verify": "bun test",
+  "checks": ["src/queue.ts, src/retry.ts modified; src/priority.ts created; tests untouched"]
+}
