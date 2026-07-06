@@ -113,6 +113,20 @@ describe("feedback", () => {
     expect(stats.fail).toBe(1);
     expect(stats.recentFailures[0]!.notes).toBe("hallucinated API");
   });
+
+  test("stats aggregates feedback by kind", () => {
+    saveSession(makeRecord("s1", { kind: "rename", durationMs: 10_000 }));
+    saveSession(makeRecord("s2", { kind: "rename", durationMs: 30_000 }));
+    saveSession(makeRecord("s3", { durationMs: 20_000 }));
+    appendFeedback({ sessionId: "s1", verdict: "pass", kind: "rename", createdAt: "t" });
+    appendFeedback({ sessionId: "s2", verdict: "fail", kind: "rename", createdAt: "t" });
+    appendFeedback({ sessionId: "s3", verdict: "pass", createdAt: "t" });
+    const stats = computeStats({ byKind: true });
+    expect(stats.byKind).toEqual([
+      { kind: "(untagged)", graded: 1, pass: 1, fail: 0, avgDurationMs: 20_000 },
+      { kind: "rename", graded: 2, pass: 1, fail: 1, avgDurationMs: 20_000 },
+    ]);
+  });
 });
 
 describe("cli parseArgs", () => {
@@ -125,6 +139,14 @@ describe("cli parseArgs", () => {
     expect(opts.config.maxIterations).toBe(10);
     expect(opts.config.permissionMode).toBe("auto");
     expect(opts.permissionModeSet).toBe(true);
+  });
+
+  test("check and kind flags", async () => {
+    const { parseArgs } = await import("../src/index.ts");
+    const opts = parseArgs(["-p", "do it", "--check", "bun test", "--check-retries", "3", "--kind", "tests"]);
+    expect(opts.checkCommand).toBe("bun test");
+    expect(opts.checkRetries).toBe(3);
+    expect(opts.kind).toBe("tests");
   });
 
   test("defaults", async () => {

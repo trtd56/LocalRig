@@ -112,6 +112,9 @@ export function createEditTool(_config: Config): ToolDef {
         const snippet = buildDiffSnippet(content, first.start, first.end, insert);
         await fs.writeFile(abs, hadBom ? "\uFEFF" + newContent : newContent, "utf8");
         ctx.readFiles.set(abs, Date.now());
+        if (ctx.report?.changedFiles.get(rel) !== "created") {
+          ctx.report?.changedFiles.set(rel, "modified");
+        }
 
         const replaced = found.spans.length;
         const output = snippet + "\n" + `edited ${abs}: replaced ${replaced} occurrence(s)`;

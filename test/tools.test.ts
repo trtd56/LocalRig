@@ -192,6 +192,19 @@ describe("read tool", () => {
 // ---------------------------------------------------------------------------
 
 describe("write tool", () => {
+  test("records created and modified files when report tracking is enabled", async () => {
+    const dir = subdir("write-report");
+    fs.writeFileSync(path.join(dir, "existing.txt"), "old");
+    const { tools, ctx } = makeTools(dir);
+    ctx.report = { changedFiles: new Map(), commandsRun: [] };
+    await tools.get("write")!.execute({ path: "new.txt", content: "new" }, ctx);
+    await tools.get("write")!.execute({ path: "existing.txt", content: "newer" }, ctx);
+    expect([...ctx.report.changedFiles.entries()]).toEqual([
+      ["new.txt", "created"],
+      ["existing.txt", "modified"],
+    ]);
+  });
+
   test("creates parent dirs and reports line count", async () => {
     const dir = subdir("write1");
     const { tools, ctx } = makeTools(dir);
@@ -301,6 +314,22 @@ async function setupEdit(name: string, content: string) {
 }
 
 describe("edit tool", () => {
+  test("records modified files when report tracking is enabled", async () => {
+    const { edit, ctx } = await setupEdit("edit-report", "const x = 1;\n");
+    ctx.report = { changedFiles: new Map(), commandsRun: [] };
+    const res = await edit.execute({ path: "f.ts", old_string: "const x = 1;", new_string: "const x = 2;" }, ctx);
+    expect(res.ok).toBe(true);
+    expect([...ctx.report.changedFiles.entries()]).toEqual([["f.ts", "modified"]]);
+  });
+
+  test("keeps created action when editing a file created earlier in the run", async () => {
+    const { edit, ctx } = await setupEdit("edit-report-created", "const x = 1;\n");
+    ctx.report = { changedFiles: new Map([["f.ts", "created"]]), commandsRun: [] };
+    const res = await edit.execute({ path: "f.ts", old_string: "const x = 1;", new_string: "const x = 2;" }, ctx);
+    expect(res.ok).toBe(true);
+    expect([...ctx.report.changedFiles.entries()]).toEqual([["f.ts", "created"]]);
+  });
+
   test("requires the file to be read first", async () => {
     const dir = subdir("edit-noread");
     fs.writeFileSync(path.join(dir, "f.ts"), "const x = 1;\n");
@@ -444,6 +473,15 @@ describe("edit tool", () => {
 // ---------------------------------------------------------------------------
 
 describe("bash tool", () => {
+  test("records commands when report tracking is enabled", async () => {
+    const dir = subdir("bash-report");
+    const { tools, ctx } = makeTools(dir);
+    ctx.report = { changedFiles: new Map(), commandsRun: [] };
+    const res = await tools.get("bash")!.execute({ command: "echo hello" }, ctx);
+    expect(res.ok).toBe(true);
+    expect(ctx.report.commandsRun).toEqual(["echo hello"]);
+  });
+
   test("captures output and succeeds", async () => {
     const dir = subdir("bash1");
     const { tools, ctx } = makeTools(dir);

@@ -122,6 +122,7 @@ export function createBashTool(config: Config): ToolDef {
         if (typeof command !== "string" || command.trim().length === 0) {
           return { ok: false, output: 'Missing "command". Call bash like: {"command": "ls -la"}' };
         }
+        ctx.report?.commandsRun.push(command.length > 500 ? command.slice(0, 497) + "..." : command);
         let timeoutMs = config.bashTimeoutMs;
         const t = args.timeout_ms;
         if (typeof t === "number" && Number.isFinite(t) && t > 0) {

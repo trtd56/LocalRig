@@ -3,6 +3,7 @@ import type {
   AgentEvent,
   ChatMessage,
   ChatResponse,
+  RunReport,
   RunStatus,
   ToolContext,
   ToolDef,
@@ -72,6 +73,7 @@ export class Agent {
       readFiles: new Map(),
       todos: [],
       signal: this.abort.signal,
+      report: { changedFiles: new Map(), commandsRun: [] },
     };
     this.tools = createTools(config, this.toolCtx);
     this.loopDetector = new LoopDetector(config.loopWarnAfter, config.loopAbortAfter);
@@ -361,6 +363,14 @@ export class Agent {
 
   getMessages(): readonly ChatMessage[] {
     return this.messages;
+  }
+
+  getReport(): RunReport {
+    const report = this.toolCtx.report!;
+    return {
+      changedFiles: [...report.changedFiles.entries()].map(([path, action]) => ({ path, action })),
+      commandsRun: [...report.commandsRun],
+    };
   }
 }
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bun
+import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import * as path from "node:path";
 import { Agent } from "./agent.ts";
+import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
 import { defaultConfig, type Config } from "./config.ts";
 import { createRenderer, c } from "./ui/render.ts";
 import type { AgentEvent, ErrorKind, RunStatus } from "./types.ts";
 import {
   appendFeedback,
+  type CheckRecord,
   computeStats,
   latestSessionId,
   listSessionIds,
@@ -14,6 +17,7 @@ import {
   newSessionId,
   readFeedback,
   saveSession,
+  type SessionRecord,
 } from "./session.ts";
 
 const HELP = `LocalRig — coding agent for local LLMs via Ollama
@@ -24,10 +28,16 @@ Usage:
   lh                        interactive REPL
   lh -p "task"              one-shot: progress → stderr, final answer → stdout
   echo "task" | lh -p -     one-shot, prompt from stdin
+  lh submit -p "task" --json
+                            start a detached one-shot and return immediately
+  lh wait <id> [--timeout 1200] [--json]
+                            wait for a submitted session to finish
+  lh poll <id> [--json]     inspect a submitted session without blocking
   lh feedback <id> <pass|fail> [--notes "why"] [--source claude-code]
                             grade a past session (use --last for the newest)
   lh sessions [-n N]        list recent sessions with their feedback
-  lh stats [--json]         delegation pass rate from recorded feedback
+  lh stats [--json] [--by-kind]
+                            delegation pass rate from recorded feedback
 
 One-shot flags:
   --json                    machine output: single JSON object on stdout,
@@ -43,6 +53,11 @@ One-shot flags:
   --max-time SECONDS        wall-clock budget; 0 disables (default: ${defaultConfig.maxTimeMs / 1000})
   --think-budget CHARS      abort a turn if thinking exceeds this before output (default: ${defaultConfig.thinkBudgetChars})
   --headroom TOKENS         tokens reserved above usage for the next reply (default: ${defaultConfig.headroomTokens})
+  --check COMMAND           run an acceptance command after the agent finishes;
+                            failed checks are fed back to the agent for repair
+  --check-retries N         repair attempts after a failing check (default: 2)
+  --kind KIND               tag this delegation (recommended: rename, tests,
+                            docs, types, perf, bugfix, other)
   --auto                    deny dangerous bash instead of the default
                             approve-everything (one-shot cannot prompt)
   --yolo                    approve all mutating tools (one-shot default)
@@ -58,11 +73,22 @@ interface CliOptions {
   quiet: boolean;
   cwd?: string;
   permissionModeSet: boolean;
+  checkCommand?: string;
+  checkRetries: number;
+  kind?: string;
+  sessionId?: string;
 }
 
 export function parseArgs(argv: string[]): CliOptions {
   const config = { ...defaultConfig };
-  const opts: CliOptions = { config, verbose: false, json: false, quiet: false, permissionModeSet: false };
+  const opts: CliOptions = {
+    config,
+    verbose: false,
+    json: false,
+    quiet: false,
+    permissionModeSet: false,
+    checkRetries: 2,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     switch (a) {
@@ -99,6 +125,18 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--cwd":
         opts.cwd = argv[++i];
+        break;
+      case "--check":
+        opts.checkCommand = argv[++i];
+        break;
+      case "--check-retries":
+        opts.checkRetries = Number(argv[++i]);
+        break;
+      case "--kind":
+        opts.kind = argv[++i];
+        break;
+      case "--session-id":
+        opts.sessionId = argv[++i];
         break;
       case "--json":
         opts.json = true;
@@ -153,11 +191,12 @@ function cmdFeedback(argv: string[]): number {
     console.error('usage: lh feedback <session-id|--last> <pass|fail> [--notes "why"] [--source name]');
     return 1;
   }
-  if (!loadSession(id)) {
+  const session = loadSession(id);
+  if (!session) {
     console.error(`unknown session: ${id} (see \`lh sessions\`)`);
     return 1;
   }
-  appendFeedback({ sessionId: id, verdict, notes, source, createdAt: new Date().toISOString() });
+  appendFeedback({ sessionId: id, verdict, kind: session.kind, notes, source, createdAt: new Date().toISOString() });
   console.log(`recorded: ${id} ${verdict}${notes ? ` — ${notes}` : ""}`);
   return 0;
 }
@@ -179,15 +218,17 @@ function cmdSessions(argv: string[]): number {
     if (!s) continue;
     const head = s.prompt.replace(/\s+/g, " ").slice(0, 60);
     const verdict = verdicts.get(id) ?? "";
+    const kind = s.kind ? `[${s.kind}] ` : "";
     console.log(
-      `${id}  ${s.status.padEnd(14)} ${Math.round(s.durationMs / 1000)}s  ${verdict.padEnd(4)} ${head}`,
+      `${id}  ${s.status.padEnd(14)} ${Math.round(s.durationMs / 1000)}s  ${verdict.padEnd(4)} ${kind}${head}`,
     );
   }
   return 0;
 }
 
 function cmdStats(argv: string[]): number {
-  const stats = computeStats();
+  const byKind = argv.includes("--by-kind");
+  const stats = computeStats({ byKind });
   if (argv.includes("--json")) {
     console.log(JSON.stringify(stats));
     return 0;
@@ -199,6 +240,15 @@ function cmdStats(argv: string[]): number {
     console.log("recent failures:");
     for (const f of stats.recentFailures) {
       console.log(`  ${f.sessionId}${f.notes ? ` — ${f.notes}` : ""}`);
+    }
+  }
+  if (byKind && stats.byKind) {
+    console.log("by kind:");
+    for (const k of stats.byKind) {
+      const rate = k.graded > 0 ? Math.round((100 * k.pass) / k.graded) : 0;
+      console.log(
+        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${rate}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s`,
+      );
     }
   }
   return 0;
@@ -224,10 +274,48 @@ function classifyError(message: string): ErrorKind {
   return "internal";
 }
 
+function reportForJson(record: SessionRecord) {
+  return record.report
+    ? {
+        changed_files: record.report.changedFiles,
+        commands_run: record.report.commandsRun,
+      }
+    : { changed_files: [], commands_run: [] };
+}
+
+function sessionForJson(record: SessionRecord) {
+  return {
+    session_id: record.id,
+    status: record.status,
+    result: record.result,
+    error: record.error,
+    error_kind: record.errorKind,
+    duration_ms: record.durationMs,
+    turns: record.turns,
+    tool_calls: record.toolCalls,
+    tokens: record.tokens,
+    model: record.model,
+    cwd: record.cwd,
+    kind: record.kind,
+    pid: record.pid,
+    check: record.check,
+    report: reportForJson(record),
+    feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<verified how / what went wrong>"`,
+  };
+}
+
+function statusExitCode(status: RunStatus): number {
+  if (status === "ok" || status === "running") return 0;
+  if (status === "interrupted") return 130;
+  return 1;
+}
+
 async function runOneShot(opts: CliOptions): Promise<never> {
   const { config } = opts;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
-  const sessionId = newSessionId();
+  const sessionId = opts.sessionId ?? newSessionId();
+  const checkRetries = Number.isFinite(opts.checkRetries) && opts.checkRetries >= 0 ? Math.floor(opts.checkRetries) : 2;
+  const originalMaxTimeMs = config.maxTimeMs;
   // One-shot can't prompt for permission: default to yolo unless the caller
   // chose --auto (then dangerous bash is denied instead of asked).
   if (!opts.permissionModeSet) config.permissionMode = "yolo";
@@ -260,21 +348,51 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   let status: RunStatus = "error";
   let error: string | undefined;
   let errorKind: ErrorKind | undefined;
+  let check: CheckRecord | undefined;
   try {
     result = await agent.run(opts.prompt!);
     status = agent.lastRunStatus;
+    if (opts.checkCommand && status === "ok") {
+      for (let attempt = 1; ; attempt++) {
+        check = await runCheckCommand({
+          command: opts.checkCommand,
+          cwd,
+          timeoutMs: config.bashTimeoutMs,
+          attempts: attempt,
+        });
+        if (check.exit_code === 0) break;
+        if (
+          !canRetryCheck({
+            attempts: attempt,
+            maxRetries: checkRetries,
+            startedAtMs: started,
+            maxTimeMs: originalMaxTimeMs,
+          })
+        ) {
+          status = "check_failed";
+          break;
+        }
+        if (originalMaxTimeMs > 0) {
+          config.maxTimeMs = Math.max(1, originalMaxTimeMs - (Date.now() - started));
+        }
+        result = await agent.run(buildCheckRepairPrompt(check));
+        status = agent.lastRunStatus;
+        if (status !== "ok") break;
+      }
+    }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
     errorKind = classifyError(error);
   }
   const durationMs = Date.now() - started;
 
-  saveSession({
+  const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date(started).toISOString(),
     cwd,
     model: config.model,
     prompt: opts.prompt!,
+    kind: opts.kind,
     status,
     result,
     error,
@@ -283,34 +401,188 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     turns,
     toolCalls,
     tokens: { prompt: promptTokens, completion: completionTokens },
+    check,
+    report: agent.getReport(),
     messages: agent.getMessages(),
-  });
+  };
+  saveSession(record);
 
   if (opts.json) {
-    console.log(
-      JSON.stringify({
-        session_id: sessionId,
-        status,
-        result,
-        error,
-        error_kind: errorKind,
-        duration_ms: durationMs,
-        turns,
-        tool_calls: toolCalls,
-        tokens: { prompt: promptTokens, completion: completionTokens },
-        model: config.model,
-        cwd,
-        feedback_command: `lh feedback ${sessionId} <pass|fail> --notes "<verified how / what went wrong>"`,
-      }),
-    );
+    console.log(JSON.stringify(sessionForJson(record)));
   } else {
     if (result) process.stdout.write(result + "\n");
     if (error) process.stderr.write(c.red(`error: ${error}`) + "\n");
+    if (check) {
+      const msg = check.exit_code === 0 ? `check passed: ${check.command}` : `check failed: ${check.command}`;
+      process.stderr.write(c.dim(`${msg} (attempts ${check.attempts})`) + "\n");
+    }
     process.stderr.write(
       c.dim(`session ${sessionId} (${status}, ${Math.round(durationMs / 1000)}s) — grade it: lh feedback ${sessionId} pass|fail`) + "\n",
     );
   }
-  process.exit(status === "ok" ? 0 : status === "interrupted" ? 130 : 1);
+  process.exit(statusExitCode(status));
+}
+
+// ---------- async submit / wait / poll ----------
+
+async function cmdSubmit(argv: string[]): Promise<number> {
+  const opts = parseArgs(argv);
+  if (opts.prompt === "-") opts.prompt = await readStdin();
+  if (opts.prompt === undefined || !opts.prompt.trim()) {
+    console.error("usage: lh submit -p <task> [--json] [--check COMMAND]");
+    return 1;
+  }
+
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const sessionId = newSessionId();
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date().toISOString(),
+    cwd,
+    model: opts.config.model,
+    prompt: opts.prompt,
+    kind: opts.kind,
+    status: "running",
+    result: "",
+    durationMs: 0,
+    turns: 0,
+    toolCalls: 0,
+    tokens: { prompt: 0, completion: 0 },
+    report: { changedFiles: [], commandsRun: [] },
+  };
+  saveSession(record);
+
+  const args = buildDetachedArgs(opts, sessionId, cwd);
+  const child = spawn(process.execPath, args, {
+    cwd,
+    detached: true,
+    stdio: "ignore",
+    env: process.env,
+  });
+  child.unref();
+  const current = loadSession(sessionId);
+  if (current?.status === "running") saveSession({ ...current, pid: child.pid });
+
+  if (opts.json) console.log(JSON.stringify({ session_id: sessionId, status: "running", pid: child.pid }));
+  else console.log(`submitted: ${sessionId} (pid ${child.pid})`);
+  return 0;
+}
+
+async function cmdWait(argv: string[]): Promise<number> {
+  const { id, timeoutSeconds, json } = parseSessionWaitArgs(argv);
+  if (!id) {
+    console.error("usage: lh wait <session-id> [--timeout 1200] [--json]");
+    return 1;
+  }
+  const deadline = timeoutSeconds === undefined ? undefined : Date.now() + timeoutSeconds * 1000;
+  for (;;) {
+    const record = refreshRunningSession(id);
+    if (!record) {
+      console.error(`unknown session: ${id}`);
+      return 1;
+    }
+    if (record.status !== "running") return printPolledSession(record, json);
+    if (deadline !== undefined && Date.now() >= deadline) {
+      if (json) console.log(JSON.stringify(sessionForJson(record)));
+      else console.log(`${id} still running`);
+      return 1;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 2_000));
+  }
+}
+
+function cmdPoll(argv: string[]): number {
+  const { id, json } = parseSessionWaitArgs(argv);
+  if (!id) {
+    console.error("usage: lh poll <session-id> [--json]");
+    return 1;
+  }
+  const record = refreshRunningSession(id);
+  if (!record) {
+    console.error(`unknown session: ${id}`);
+    return 1;
+  }
+  return printPolledSession(record, json);
+}
+
+function printPolledSession(record: SessionRecord, json: boolean): number {
+  if (json) console.log(JSON.stringify(sessionForJson(record)));
+  else {
+    console.log(`${record.id}  ${record.status}  ${Math.round(record.durationMs / 1000)}s`);
+    if (record.result) console.log(record.result);
+    if (record.error) console.error(`error: ${record.error}`);
+  }
+  return statusExitCode(record.status);
+}
+
+function parseSessionWaitArgs(argv: string[]): { id?: string; timeoutSeconds?: number; json: boolean } {
+  let id: string | undefined;
+  let timeoutSeconds: number | undefined;
+  let json = false;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]!;
+    if (a === "--timeout") timeoutSeconds = Number(argv[++i]);
+    else if (a === "--json") json = true;
+    else if (!a.startsWith("-") && id === undefined) id = a;
+  }
+  return { id, timeoutSeconds, json };
+}
+
+function refreshRunningSession(id: string): SessionRecord | null {
+  const record = loadSession(id);
+  if (!record) return null;
+  if (record.status === "running" && record.pid && !isProcessAlive(record.pid)) {
+    const died = { ...record, status: "died" as const, durationMs: Date.now() - Date.parse(record.createdAt) };
+    saveSession(died);
+    return died;
+  }
+  return record;
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function buildDetachedArgs(opts: CliOptions, sessionId: string, cwd: string): string[] {
+  const script = process.argv[1]!;
+  const args = [
+    script,
+    "-p",
+    opts.prompt!,
+    "--json",
+    "--quiet",
+    "--session-id",
+    sessionId,
+    "--cwd",
+    cwd,
+    "--model",
+    opts.config.model,
+    "--num-ctx",
+    String(opts.config.numCtx),
+    "--num-predict",
+    String(opts.config.numPredict),
+    "--temperature",
+    String(opts.config.temperature),
+    "--presence-penalty",
+    String(opts.config.presencePenalty),
+    "--max-iterations",
+    String(opts.config.maxIterations),
+    "--max-time",
+    String(opts.config.maxTimeMs / 1000),
+    "--think-budget",
+    String(opts.config.thinkBudgetChars),
+    "--headroom",
+    String(opts.config.headroomTokens),
+  ];
+  if (opts.permissionModeSet) args.push(opts.config.permissionMode === "auto" ? "--auto" : "--yolo");
+  if (opts.checkCommand) args.push("--check", opts.checkCommand, "--check-retries", String(opts.checkRetries));
+  if (opts.kind) args.push("--kind", opts.kind);
+  return args;
 }
 
 // ---------- REPL ----------
@@ -367,6 +639,12 @@ async function main() {
   const argv = process.argv.slice(2);
 
   switch (argv[0]) {
+    case "submit":
+      process.exit(await cmdSubmit(argv.slice(1)));
+    case "wait":
+      process.exit(await cmdWait(argv.slice(1)));
+    case "poll":
+      process.exit(cmdPoll(argv.slice(1)));
     case "feedback":
       process.exit(cmdFeedback(argv.slice(1)));
     case "sessions":

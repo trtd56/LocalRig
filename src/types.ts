@@ -61,6 +61,7 @@ export interface ToolContext {
   readFiles: Map<string, number>;
   todos: TodoItem[];
   signal: AbortSignal;
+  report?: RunReportBuilder;
 }
 
 export interface ToolResult {
@@ -77,6 +78,25 @@ export interface TodoItem {
   id: number;
   content: string;
   status: "pending" | "in_progress" | "completed";
+}
+
+// ---------- Machine-readable run report ----------
+
+export type ChangedFileAction = "created" | "modified" | "deleted";
+
+export interface ChangedFileReport {
+  path: string;
+  action: ChangedFileAction;
+}
+
+export interface RunReport {
+  changedFiles: ChangedFileReport[];
+  commandsRun: string[];
+}
+
+export interface RunReportBuilder {
+  changedFiles: Map<string, ChangedFileAction>;
+  commandsRun: string[];
 }
 
 // ---------- Provider ----------
@@ -116,6 +136,9 @@ export interface ChatResponse {
 /** Why a run() call ended. Used for CLI exit codes and session records. */
 export type RunStatus =
   | "ok"
+  | "check_failed"
+  | "running"
+  | "died"
   | "max_iterations"
   | "timeout"
   | "loop_abort"

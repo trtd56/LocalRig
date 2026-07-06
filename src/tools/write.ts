@@ -74,6 +74,12 @@ export function createWriteTool(_config: Config): ToolDef {
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, content, "utf8");
         ctx.readFiles.set(abs, Date.now());
+        if (ctx.report) {
+          const action = existing === null ? "created" : "modified";
+          if (action === "created" || ctx.report.changedFiles.get(rel) !== "created") {
+            ctx.report.changedFiles.set(rel, action);
+          }
+        }
 
         const n = countLines(content);
         let output = `wrote ${n} lines to ${abs}`;

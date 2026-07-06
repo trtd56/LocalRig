@@ -9,7 +9,15 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { ChatMessage, ErrorKind, RunStatus } from "./types.ts";
+import type { ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
+
+export interface CheckRecord {
+  command: string;
+  exit_code: number | null;
+  attempts: number;
+  output_tail: string;
+  timed_out?: boolean;
+}
 
 export interface SessionTokens {
   /** Prompt tokens of the final turn (context size at completion). */
@@ -24,6 +32,7 @@ export interface SessionRecord {
   cwd: string;
   model: string;
   prompt: string;
+  kind?: string;
   status: RunStatus;
   result: string;
   error?: string;
@@ -33,6 +42,10 @@ export interface SessionRecord {
   turns: number;
   toolCalls: number;
   tokens: SessionTokens;
+  check?: CheckRecord;
+  report?: RunReport;
+  /** Detached worker pid for `lh submit` sessions while status is running. */
+  pid?: number;
   /** Full message transcript for post-hoc debugging. */
   messages?: readonly ChatMessage[];
 }
@@ -40,6 +53,7 @@ export interface SessionRecord {
 export interface FeedbackRecord {
   sessionId: string;
   verdict: "pass" | "fail";
+  kind?: string;
   notes?: string;
   /** Who graded it, e.g. "claude-code", "codex", "human". */
   source?: string;
@@ -118,20 +132,54 @@ export interface Stats {
   pass: number;
   fail: number;
   recentFailures: FeedbackRecord[];
+  byKind?: KindStats[];
+}
+
+export interface KindStats {
+  kind: string;
+  graded: number;
+  pass: number;
+  fail: number;
+  avgDurationMs: number;
 }
 
 /** Aggregate pass/fail over all recorded feedback (re-grades: last one wins). */
-export function computeStats(): Stats {
+export function computeStats(options: { byKind?: boolean } = {}): Stats {
   const byId = new Map<string, FeedbackRecord>();
   for (const fb of readFeedback()) byId.set(fb.sessionId, fb);
   const graded = [...byId.values()];
   const pass = graded.filter((f) => f.verdict === "pass").length;
   const failures = graded.filter((f) => f.verdict === "fail").slice(-5);
-  return {
+  const stats: Stats = {
     sessions: listSessionIds().length,
     graded: graded.length,
     pass,
     fail: graded.length - pass,
     recentFailures: failures,
   };
+  if (options.byKind) stats.byKind = computeKindStats(graded);
+  return stats;
+}
+
+function computeKindStats(graded: FeedbackRecord[]): KindStats[] {
+  const buckets = new Map<string, { graded: number; pass: number; fail: number; durationMs: number }>();
+  for (const fb of graded) {
+    const session = loadSession(fb.sessionId);
+    const kind = fb.kind ?? session?.kind ?? "(untagged)";
+    const cur = buckets.get(kind) ?? { graded: 0, pass: 0, fail: 0, durationMs: 0 };
+    cur.graded++;
+    if (fb.verdict === "pass") cur.pass++;
+    else cur.fail++;
+    cur.durationMs += session?.durationMs ?? 0;
+    buckets.set(kind, cur);
+  }
+  return [...buckets.entries()]
+    .map(([kind, s]) => ({
+      kind,
+      graded: s.graded,
+      pass: s.pass,
+      fail: s.fail,
+      avgDurationMs: s.graded > 0 ? Math.round(s.durationMs / s.graded) : 0,
+    }))
+    .sort((a, b) => a.kind.localeCompare(b.kind));
 }
