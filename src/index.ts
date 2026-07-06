@@ -214,7 +214,12 @@ function cmdStats(argv: string[]): number {
  * for future validation errors (e.g. bad --model / config values).
  */
 function classifyError(message: string): ErrorKind {
-  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(message)) return "connection";
+  // Bun's fetch collapses both connection-refused and DNS failure into this
+  // exact generic string (verified against a real dead port and a bad
+  // hostname on Bun 1.2.21 — neither produces ECONNREFUSED/ENOTFOUND text
+  // the way Node's fetch does). Node-style codes are kept for when this runs
+  // under `node` instead (package.json allows node >=24 as an alternative).
+  if (/fetch failed|unable to connect|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(message)) return "connection";
   if (message.startsWith("Ollama HTTP") || message.startsWith("Ollama error:")) return "ollama_error";
   return "internal";
 }
