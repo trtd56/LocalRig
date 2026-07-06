@@ -25,6 +25,24 @@ bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 - タスクごとの制限時間30分(ハーネスには `--max-time 1500` が渡り、SIGKILL 前に自力で切り上げる)。verify は120秒制限
 - 所要時間の目安: claude 全20タスクで約18分、harness で約110分(タスク間で Ollama を専有するので他の重い処理と並走させない)
 
+## claude-delegate アーム(委譲による節約の計測)
+
+Claude Code (Sonnet) が**自分で実装する**代わりに、ローカルの `lh` CLI に実装を**委譲**した場合、Claude 側の API コスト(トークン/ドル)がどれだけ減るかを計測するアーム。
+
+```sh
+bun run eval/run.ts --agent claude-delegate --task doc-sync           # 単一タスク
+bun run eval/run.ts --agent claude-delegate --task doc-sync,fix-bug   # 複数指定
+bun run eval/analyze-delegation.ts                                    # 比較レポート生成
+```
+
+- **プロンプトは baseline と同一**: タスク面のプロンプト(`spec.prompt`)は `claude` アームとバイト単位で同一。委譲の指示は `claude --append-system-prompt` にのみ注入される(`run.ts` の `DELEGATE_NUDGE` として export、調整はここを編集)。両アームが同じ指示・同じタスクを解くので比較可能
+- **セッションの隔離**: 各タスクの委譲セッションは `eval/results/lh-home/<task>/` を `LH_HOME` として実行される(workdir 削除後も残り、ユーザーの実 `~/.localrig` を汚染しない)。タスク実行ごとに冒頭で wipe されるので前回の残骸は混入しない。Bash ツールの待ち時間上限も広げる(`BASH_MAX_TIMEOUT_MS`/`BASH_DEFAULT_TIMEOUT_MS`)
+- **制限時間はタスクあたり40分**(ローカルモデルの実行時間 + Claude のオーケストレーション/検証を見込む。他アームは30分)
+- **収集する指標**: baseline の claude アーム同様 `costUsd`(`total_cost_usd`)と `usage` 内訳(input/cacheRead/cacheCreation/output)を summary に取り込む。加えてローカル側を `LH_HOME` から回収し、`delegated`(委譲したか)・`delegations`(session ごとの status/turns/toolCalls/tokens/duration)・`feedback`(claude が記録した pass/fail 判定)を summary エントリに付与する
+- **分析**: `eval/analyze-delegation.ts` が `summary-claude.json`(baseline)と `summary-claude-delegate.json` を突き合わせ、タスク別表(pass・Claude コスト base→deleg と節約率・出力/プロンプトトークン・turns・実時間・委譲有無・ローカル側トークン/時間)と集計・注意書きを Markdown で `eval/results/delegation-comparison.md` に出力(標準出力にも同内容)。baseline の古いエントリで `costUsd` が無い場合は生ログ `claude-<task>.log` から `total_cost_usd` をフォールバック抽出する
+- **主指標はドルコスト**。プロンプトトークンはキャッシュ read/creation を含むため実プロンプトサイズを過大表示し、コストと比例しない(詳細はレポートの caveats 節)
+- 実施結果と分析は [REPORT.md](REPORT.md) の「委譲検証(2026-07-06、claude-delegate アーム)」節を参照(6タスク中3タスクのみ委譲、集計 $1.053→$0.857 = −19%、委譲は可変コストを ~$0.11〜0.13 の固定オーケストレーションコストに変換するため損益分岐 ≈ $0.13〜0.15)
+
 ## ランナーの仕組みと落とし穴
 
 - **テスト改ざん検出**: fixture コピー直後に「相対パスに `test` を含む全既存ファイル」の sha256 を記録し、終了後に不一致・削除があれば FAIL。エージェントが**新規作成**したファイルは対象外

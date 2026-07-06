@@ -11,10 +11,11 @@ description: Delegate small, mechanical, verifiable coding tasks to LocalRig via
 
 Delegate when ALL of these hold:
 - The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
+- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost — about $0.11–0.15 of *your own* tokens for writing the work order, verifying, and recording feedback — regardless of how big the task is. So it only pays when doing the task yourself would cost more than that: many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Measured break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself.
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
 
-Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, or anything urgent (local runs take 1–15 minutes).
+Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, small quick edits below the cost floor (a one-line doc fix, a couple of type errors — you'll spend more orchestrating than doing it), or anything urgent (local runs take 1–15 minutes, roughly 3–7x your own wall-clock).
 
 ## How to call
 
@@ -30,9 +31,9 @@ lh -p "<task>" --json --cwd /abs/path/to/project
 
 ## Verify — never trust the result blindly
 
-Before using or committing anything the local agent produced:
+Before using or committing anything the local agent produced, and **before you record a `pass`**:
 1. `git diff` (or read the touched files) in the target repo.
-2. Run the verification command you stated in the prompt (tests, typecheck, grep).
+2. Run the **exact** acceptance command from the task (tests, typecheck, grep) — do not settle for a semantic "looks right" review. If the task states a strict output-format requirement (an exact first line, a specific filename, an exact string), re-check that literal requirement, not just the meaning. A shallow semantic review has been observed to accept work that satisfied the intent but violated a format gate, and then record a false `pass`.
 
 ## Feedback — REQUIRED after every delegation
 

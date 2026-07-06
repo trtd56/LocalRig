@@ -15,16 +15,67 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { FeedbackRecord, SessionRecord } from "../src/session.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const TASKS_DIR = path.join(ROOT, "eval", "tasks");
 const RESULTS_DIR = path.join(ROOT, "eval", "results");
 const TASK_TIMEOUT_MS = 30 * 60 * 1000;
+// Delegation runs = local model runtime + Claude's orchestration/verification,
+// so they get a longer SIGKILL backstop than the direct arms.
+const DELEGATE_TASK_TIMEOUT_MS = 40 * 60 * 1000;
+// Per-task LH_HOME dirs live here (under the gitignored results dir) so that
+// delegation sessions survive workdir deletion and never touch the user's real
+// ~/.localrig. See runTask() for the per-run wipe.
+const LH_HOME_ROOT = path.join(RESULTS_DIR, "lh-home");
+
+/**
+ * System-prompt append for the `claude-delegate` arm, kept as an exported const
+ * so it can be tuned without touching runner logic. This is injected ONLY via
+ * `claude --append-system-prompt`; the task-facing prompt stays byte-identical
+ * to the baseline (spec.prompt), so both arms solve the same task under the
+ * same user instruction — the only difference is this delegation directive.
+ */
+export const DELEGATE_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
+1. Run via Bash: lh -p "<work order>" --json --cwd <absolute cwd> --max-time 1200
+   Use a Bash timeout of 1500000 ms (the local model takes 1-20 minutes). Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per call.
+2. When it returns, parse the JSON (session_id, status, result).
+3. Verify the result yourself cheaply (git diff / read touched files / run the stated check command). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
+4. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
+Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
 
 interface TaskSpec {
   name: string;
   prompt: string;
   verify: string;
+}
+
+/** Claude usage breakdown, mirrored from the claude CLI's usage object. */
+interface ClaudeUsageBreakdown {
+  input?: number;
+  cacheRead?: number;
+  cacheCreation?: number;
+  output?: number;
+}
+
+/** One local-side delegation, read back from a session record under LH_HOME. */
+interface DelegationMetric {
+  sessionId: string;
+  status: string;
+  turns: number;
+  toolCalls: number;
+  promptTokens: number;
+  completionTokens: number;
+  durationMs: number;
+  /** ErrorKind bucket (see src/types.ts); present only when the session errored. */
+  errorKind?: string;
+}
+
+/** One caller verdict, read back from feedback.jsonl under LH_HOME. */
+interface FeedbackMetric {
+  sessionId: string;
+  verdict: string;
+  notes?: string;
 }
 
 interface TaskResult {
@@ -48,6 +99,16 @@ interface TaskResult {
   toolCalls?: number;
   /** ErrorKind string (see src/types.ts); harness only emits this if/when its --json output grows an error_kind field. */
   errorKind?: string;
+  /** Dollar cost of the run (claude/claude-delegate only, from total_cost_usd). */
+  costUsd?: number;
+  /** Claude token usage breakdown (claude/claude-delegate only). */
+  usage?: ClaudeUsageBreakdown;
+  // claude-delegate arm only: local-side view of the delegated work, collected
+  // from LH_HOME after the run (see collectDelegationMetrics). Absent otherwise.
+  /** True if any local session file was produced (i.e. Claude actually delegated). */
+  delegated?: boolean;
+  delegations?: DelegationMetric[];
+  feedback?: FeedbackMetric[];
 }
 
 function parseArgs() {
@@ -83,9 +144,10 @@ function run(
   args: string[],
   cwd: string,
   timeoutMs: number,
+  env: NodeJS.ProcessEnv = process.env,
 ): Promise<{ code: number | null; output: string; stdout: string }> {
   return new Promise((resolve) => {
-    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const child = spawn(cmd, args, { cwd, stdio: ["ignore", "pipe", "pipe"], env });
     let output = "";
     let stdout = "";
     const timer = setTimeout(() => {
@@ -125,6 +187,8 @@ interface StructuredMetrics {
   turns?: number;
   toolCalls?: number;
   errorKind?: string;
+  costUsd?: number;
+  usage?: ClaudeUsageBreakdown;
 }
 
 /**
@@ -170,15 +234,18 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
     };
   }
 
-  if (agent === "claude") {
+  if (agent === "claude" || agent === "claude-delegate") {
     // claude --output-format json (verified via `claude --help` + a live
-    // `-p ... --output-format json` run): gives num_turns and a usage object,
-    // but no per-tool-call count and no equivalent to our RunStatus enum (its
-    // subtype/terminal_reason encode different, CLI-specific states) — so
-    // status and toolCalls are intentionally left undefined here, not an
-    // oversight. promptTokens sums input_tokens with the two prompt-cache
+    // `-p ... --output-format json` run): gives num_turns, total_cost_usd, and
+    // a usage object, but no per-tool-call count and no equivalent to our
+    // RunStatus enum (its subtype/terminal_reason encode different, CLI-specific
+    // states) — so status and toolCalls are intentionally left undefined here,
+    // not an oversight. promptTokens sums input_tokens with the two prompt-cache
     // fields, since input_tokens alone excludes cached context and would
-    // understate the actual prompt size on later turns of a conversation.
+    // understate the actual prompt size on later turns of a conversation; the
+    // per-field split is also kept in `usage` so the delegation analysis can
+    // separate cache reads/creation from fresh input. Same shape for the
+    // claude-delegate arm (it's the same CLI, just with an extra system prompt).
     const usage = asRecord(obj.usage);
     const promptTokens = usage
       ? (num(usage.input_tokens) ?? 0) + (num(usage.cache_read_input_tokens) ?? 0) + (num(usage.cache_creation_input_tokens) ?? 0)
@@ -187,6 +254,15 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
       turns: num(obj.num_turns),
       promptTokens,
       completionTokens: usage ? num(usage.output_tokens) : undefined,
+      costUsd: num(obj.total_cost_usd),
+      usage: usage
+        ? {
+            input: num(usage.input_tokens),
+            cacheRead: num(usage.cache_read_input_tokens),
+            cacheCreation: num(usage.cache_creation_input_tokens),
+            output: num(usage.output_tokens),
+          }
+        : undefined,
     };
   }
 
@@ -208,17 +284,76 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
       args: ["run", path.join(ROOT, "src", "index.ts"), "-p", prompt, "-v", "--json", "--max-time", "1500"],
     };
   }
-  if (agent === "claude") {
+  if (agent === "claude" || agent === "claude-delegate") {
     // --output-format json (confirmed via `claude --help` and a live test
     // run) replaces claude's default plain-text stdout with a single JSON
     // result object containing duration_ms, num_turns, and token usage — see
     // extractStructuredMetrics for what we pull out of it and what we can't.
-    return {
-      cmd: "claude",
-      args: ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"],
-    };
+    const args = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"];
+    // claude-delegate: identical invocation, but the delegation directive is
+    // appended to the system prompt. The task-facing prompt (spec.prompt) is
+    // left byte-identical to the baseline so the arms stay comparable.
+    if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
+    return { cmd: "claude", args };
   }
   throw new Error(`unknown agent: ${agent}`);
+}
+
+/**
+ * Reads the local side of a claude-delegate run back out of its LH_HOME:
+ * every session record `lh` wrote under sessions/ plus the verdicts in
+ * feedback.jsonl. Tolerates a missing/partial LH_HOME (Claude may not have
+ * delegated at all, or may have crashed mid-run) — never throws. Field names
+ * mirror SessionRecord / FeedbackRecord in src/session.ts.
+ */
+function collectDelegationMetrics(lhHome: string): {
+  delegated: boolean;
+  delegations: DelegationMetric[];
+  feedback: FeedbackMetric[];
+} {
+  const delegations: DelegationMetric[] = [];
+  const sessionsDir = path.join(lhHome, "sessions");
+  try {
+    for (const f of fs.readdirSync(sessionsDir)) {
+      if (!f.endsWith(".json")) continue;
+      try {
+        const rec = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), "utf8")) as Partial<SessionRecord>;
+        delegations.push({
+          sessionId: rec.id ?? f.slice(0, -".json".length),
+          status: rec.status ?? "",
+          turns: rec.turns ?? 0,
+          toolCalls: rec.toolCalls ?? 0,
+          promptTokens: rec.tokens?.prompt ?? 0,
+          completionTokens: rec.tokens?.completion ?? 0,
+          durationMs: rec.durationMs ?? 0,
+          errorKind: rec.errorKind,
+        });
+      } catch {
+        // Skip an unreadable/partial session file rather than losing the rest.
+      }
+    }
+  } catch {
+    // No sessions dir → Claude never delegated. Falls through to delegated:false.
+  }
+  // Session ids start with a timestamp, so this is oldest → newest.
+  delegations.sort((a, b) => a.sessionId.localeCompare(b.sessionId));
+
+  const feedback: FeedbackMetric[] = [];
+  try {
+    const lines = fs.readFileSync(path.join(lhHome, "feedback.jsonl"), "utf8").split("\n").filter(Boolean);
+    for (const line of lines) {
+      try {
+        const fb = JSON.parse(line) as Partial<FeedbackRecord>;
+        feedback.push({ sessionId: fb.sessionId ?? "", verdict: fb.verdict ?? "", notes: fb.notes });
+      } catch {
+        // Skip a corrupt jsonl line.
+      }
+    }
+  } catch {
+    // No feedback file → Claude delegated but didn't grade. Tolerated.
+  }
+
+  return { delegated: delegations.length > 0, delegations, feedback };
 }
 
 async function runTask(agent: string, taskDir: string, keep: boolean): Promise<TaskResult> {
@@ -232,10 +367,29 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     if (f.includes("test")) testHashes.set(f, sha(path.join(workdir, f)));
   }
 
+  // claude-delegate: hand the spawned Claude Code an isolated LH_HOME that
+  // outlives the (deleted) workdir, so we can read the local side back after
+  // the run and delegation sessions never mix into the user's ~/.localrig.
+  // Wiped per run so an earlier run's sessions can't be miscounted as this
+  // run's. Also widen the Bash tool's timeout ceiling so Claude can actually
+  // wait out a multi-minute `lh` call.
+  const isDelegate = agent === "claude-delegate";
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  let lhHome: string | undefined;
+  if (isDelegate) {
+    lhHome = path.join(LH_HOME_ROOT, spec.name);
+    fs.rmSync(lhHome, { recursive: true, force: true });
+    fs.mkdirSync(lhHome, { recursive: true });
+    env.LH_HOME = lhHome;
+    env.BASH_MAX_TIMEOUT_MS = "1800000";
+    env.BASH_DEFAULT_TIMEOUT_MS = "1500000";
+  }
+
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);
   const { cmd, args } = agentCommand(agent, spec.prompt);
+  const timeoutMs = isDelegate ? DELEGATE_TASK_TIMEOUT_MS : TASK_TIMEOUT_MS;
   const started = Date.now();
-  const agentRun = await run(cmd, args, workdir, TASK_TIMEOUT_MS);
+  const agentRun = await run(cmd, args, workdir, timeoutMs, env);
   const durationSec = Math.round((Date.now() - started) / 1000);
 
   const testFilesModified: string[] = [];
@@ -252,6 +406,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
   fs.writeFileSync(path.join(RESULTS_DIR, `${agent}-${spec.name}.log`), agentRun.output);
 
   const metrics = extractStructuredMetrics(agent, spec.name, agentRun.stdout);
+  const delegation = isDelegate && lhHome ? collectDelegationMetrics(lhHome) : undefined;
 
   if (!keep) fs.rmSync(workdir, { recursive: true, force: true });
   return {
@@ -264,6 +419,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     agentExitCode: agentRun.code,
     workdir: keep ? workdir : "(removed)",
     ...metrics,
+    ...(delegation ?? {}),
   };
 }
 
