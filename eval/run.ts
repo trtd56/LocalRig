@@ -28,6 +28,16 @@ const DELEGATE_TASK_TIMEOUT_MS = 40 * 60 * 1000;
 // delegation sessions survive workdir deletion and never touch the user's real
 // ~/.localrig. See runTask() for the per-run wipe.
 const LH_HOME_ROOT = path.join(RESULTS_DIR, "lh-home");
+// claude-delegate-haiku arm: the worker's result JSONs (<workdir>/.delegate/*.json)
+// are copied here before the workdir is deleted, so worker cost/quality survives.
+const DELEGATE_WORKERS_ROOT = path.join(RESULTS_DIR, "delegate-workers");
+// Claude Code writes each session's transcript to
+// ~/.claude/projects/<slug>/<session-id>.jsonl, where <slug> is the run's cwd
+// with every non-[A-Za-z0-9-] char replaced by '-' (verified against real dirs:
+// /Users/s06330/Development/localllm_harnes → -Users-s06330-Development-localllm-harnes,
+// i.e. '/' and '_' both map to '-', existing '-' preserved, no collapsing). Used
+// as a mechanical backup to count worker sessions for the haiku arm.
+const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
 
 /**
  * System-prompt append for the `claude-delegate` arm, kept as an exported const
@@ -37,12 +47,43 @@ const LH_HOME_ROOT = path.join(RESULTS_DIR, "lh-home");
  * same user instruction — the only difference is this delegation directive.
  */
 export const DELEGATE_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
-1. Run via Bash: lh -p "<work order>" --json --cwd <absolute cwd> --max-time 1200
-   Use a Bash timeout of 1500000 ms (the local model takes 1-20 minutes). Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per call.
-2. When it returns, parse the JSON (session_id, status, result).
-3. Verify the result yourself cheaply (git diff / read touched files / run the stated check command). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
+1. Run via Bash with stdin heredoc: lh -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command>" --max-time 1200
+   Run it in the FOREGROUND with a Bash timeout of 1500000 ms (the local model takes 1-20 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the local agent to write its findings to the file the task asks for. One task per call.
+2. When it returns, parse the JSON (session_id, status, result, check, report). If check.exit_code===0, do not rerun the acceptance command unless it is flaky or security-sensitive; inspect report.changed_files plus git diff for unexpected changes.
+3. Verify the result cheaply (report.changed_files / git diff / read touched files). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
 4. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
 Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
+
+/**
+ * System-prompt append for the `claude-delegate-haiku` control arm. This is a
+ * Haiku-worker control for `claude-delegate`: same Sonnet orchestrator, but the
+ * worker is `claude --model haiku` instead of the local `lh` CLI, which isolates
+ * the fixed "delegation structure cost" (orchestration + verification) from the
+ * local model's quality/latency. The delegation-first framing and the
+ * no-edits-before-first-return rule are byte-identical to DELEGATE_NUDGE; the
+ * ONLY intended differences are (a) the worker command, (b) the worker writes
+ * its result to a numbered JSON file we read back instead of an `lh` session,
+ * and (c) the orchestrator states its verdict in its final message rather than
+ * running `lh feedback` (Haiku workers have no session store to grade).
+ */
+export const HAIKU_DELEGATE_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through a subordinate worker agent instead of doing it yourself. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
+1. Run via Bash (first \`mkdir -p .delegate\`):
+   claude -p "<work order>" --model haiku --output-format json --dangerously-skip-permissions < /dev/null > .delegate/worker-1.json
+   Run this in the FOREGROUND with a Bash timeout of 600000 ms. Do NOT use background execution for the worker command — backgrounded nested claude processes silently fail to start in this environment; a foreground call works. Haiku is fast (usually under 2 minutes), so blocking is fine. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. For investigation/triage tasks, tell the worker to write its findings to the file the task asks for. One task per call; number successive calls worker-2.json, worker-3.json.
+2. When it returns, read .delegate/worker-N.json (fields: result, total_cost_usd, is_error).
+3. Verify the result yourself cheaply (git diff / read touched files / run the stated check command). Only if the delegated result is broken or incomplete may you fix the remaining issues yourself with minimal edits.
+4. In your final message, state how many worker calls you made and your pass/fail verdict on the worker's output.
+Never modify test files. The ONLY tool calls allowed before your first worker call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one worker attempt has returned.`;
+
+/** True for every delegate arm (`claude-delegate`, `claude-delegate-haiku`, …). */
+function isDelegateArm(agent: string): boolean {
+  return agent.startsWith("claude-delegate");
+}
+
+/** True for any arm whose stdout is the `claude` result JSON (baseline + all delegate arms). */
+function isClaudeArm(agent: string): boolean {
+  return agent === "claude" || isDelegateArm(agent);
+}
 
 interface TaskSpec {
   name: string;
@@ -78,6 +119,22 @@ interface FeedbackMetric {
   notes?: string;
 }
 
+/**
+ * One Haiku worker call, read back from <workdir>/.delegate/worker-N.json
+ * (the claude CLI result JSON the orchestrator redirected there). Unlike an lh
+ * delegation, the worker's tokens ARE billed API usage, so costUsd matters for
+ * the true total cost of the haiku arm.
+ */
+interface WorkerMetric {
+  /** Source filename, e.g. "worker-1.json". */
+  file: string;
+  costUsd?: number;
+  isError?: boolean;
+  turns?: number;
+  usage?: ClaudeUsageBreakdown;
+  durationMs?: number;
+}
+
 interface TaskResult {
   task: string;
   agent: string;
@@ -105,10 +162,20 @@ interface TaskResult {
   usage?: ClaudeUsageBreakdown;
   // claude-delegate arm only: local-side view of the delegated work, collected
   // from LH_HOME after the run (see collectDelegationMetrics). Absent otherwise.
-  /** True if any local session file was produced (i.e. Claude actually delegated). */
+  /**
+   * True if the orchestrator actually delegated. For `claude-delegate` this is
+   * "any lh session appeared"; for `claude-delegate-haiku` it is "any worker
+   * JSON appeared" (see runTask). For the haiku arm, a non-empty `delegations`
+   * would instead mean the orchestrator wrongly called `lh` — visible contamination.
+   */
   delegated?: boolean;
   delegations?: DelegationMetric[];
   feedback?: FeedbackMetric[];
+  // claude-delegate-haiku arm only:
+  /** Haiku worker calls parsed from <workdir>/.delegate/*.json. */
+  workers?: WorkerMetric[];
+  /** Mechanical backup count of worker sessions under ~/.claude/projects/<slug>/ (excludes the orchestrator's own session). */
+  workerSessions?: number;
 }
 
 function parseArgs() {
@@ -234,7 +301,7 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
     };
   }
 
-  if (agent === "claude" || agent === "claude-delegate") {
+  if (isClaudeArm(agent)) {
     // claude --output-format json (verified via `claude --help` + a live
     // `-p ... --output-format json` run): gives num_turns, total_cost_usd, and
     // a usage object, but no per-tool-call count and no equivalent to our
@@ -244,8 +311,10 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
     // fields, since input_tokens alone excludes cached context and would
     // understate the actual prompt size on later turns of a conversation; the
     // per-field split is also kept in `usage` so the delegation analysis can
-    // separate cache reads/creation from fresh input. Same shape for the
-    // claude-delegate arm (it's the same CLI, just with an extra system prompt).
+    // separate cache reads/creation from fresh input. Same shape for every
+    // delegate arm — they're the same CLI, just with an extra system prompt.
+    // Note this captures the ORCHESTRATOR's cost only; haiku workers are billed
+    // separately and collected via collectWorkerMetrics.
     const usage = asRecord(obj.usage);
     const promptTokens = usage
       ? (num(usage.input_tokens) ?? 0) + (num(usage.cache_read_input_tokens) ?? 0) + (num(usage.cache_creation_input_tokens) ?? 0)
@@ -284,16 +353,19 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
       args: ["run", path.join(ROOT, "src", "index.ts"), "-p", prompt, "-v", "--json", "--max-time", "1500"],
     };
   }
-  if (agent === "claude" || agent === "claude-delegate") {
+  if (isClaudeArm(agent)) {
     // --output-format json (confirmed via `claude --help` and a live test
     // run) replaces claude's default plain-text stdout with a single JSON
     // result object containing duration_ms, num_turns, and token usage — see
     // extractStructuredMetrics for what we pull out of it and what we can't.
+    // Every delegate arm shares this orchestrator invocation; the delegation
+    // directive is appended to the system prompt only. The task-facing prompt
+    // (spec.prompt) is left byte-identical to the baseline so the arms stay
+    // comparable — the arm's only difference is which worker it delegates to.
     const args = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"];
-    // claude-delegate: identical invocation, but the delegation directive is
-    // appended to the system prompt. The task-facing prompt (spec.prompt) is
-    // left byte-identical to the baseline so the arms stay comparable.
     if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
+    else if (agent === "claude-delegate-haiku") args.push("--append-system-prompt", HAIKU_DELEGATE_NUDGE);
+    else if (isDelegateArm(agent)) throw new Error(`unknown delegate arm: ${agent} (no nudge defined)`);
     return { cmd: "claude", args };
   }
   throw new Error(`unknown agent: ${agent}`);
@@ -356,6 +428,96 @@ function collectDelegationMetrics(lhHome: string): {
   return { delegated: delegations.length > 0, delegations, feedback };
 }
 
+/**
+ * claude-delegate-haiku only. Copies the orchestrator's worker result JSONs out
+ * of <workdir>/.delegate/ (before the workdir is deleted) into
+ * delegate-workers/<task>/, and parses each `claude --output-format json`
+ * result into a WorkerMetric. Tolerates a missing dir (orchestrator never
+ * delegated) and unparseable files (kept with just `file` set). Never throws.
+ */
+function collectWorkerMetrics(workdir: string, taskName: string): WorkerMetric[] {
+  const srcDir = path.join(workdir, ".delegate");
+  let files: string[];
+  try {
+    files = fs.readdirSync(srcDir).filter((f) => f.endsWith(".json")).sort();
+  } catch {
+    return []; // no .delegate → orchestrator never spawned a worker
+  }
+  const destDir = path.join(DELEGATE_WORKERS_ROOT, taskName);
+  fs.rmSync(destDir, { recursive: true, force: true });
+  fs.mkdirSync(destDir, { recursive: true });
+
+  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+  const asRecord = (v: unknown): Record<string, unknown> | undefined =>
+    typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
+
+  const workers: WorkerMetric[] = [];
+  for (const f of files) {
+    const srcPath = path.join(srcDir, f);
+    try {
+      fs.copyFileSync(srcPath, path.join(destDir, f));
+    } catch {
+      // Copy failure shouldn't drop the parsed metric; keep going.
+    }
+    try {
+      const obj = JSON.parse(fs.readFileSync(srcPath, "utf8")) as Record<string, unknown>;
+      const usage = asRecord(obj.usage);
+      workers.push({
+        file: f,
+        costUsd: num(obj.total_cost_usd),
+        isError: typeof obj.is_error === "boolean" ? obj.is_error : undefined,
+        turns: num(obj.num_turns),
+        durationMs: num(obj.duration_ms),
+        usage: usage
+          ? {
+              input: num(usage.input_tokens),
+              cacheRead: num(usage.cache_read_input_tokens),
+              cacheCreation: num(usage.cache_creation_input_tokens),
+              output: num(usage.output_tokens),
+            }
+          : undefined,
+      });
+    } catch {
+      workers.push({ file: f }); // copied but unparseable
+    }
+  }
+  return workers;
+}
+
+/** The `session_id` from a claude result JSON on stdout, if present. */
+function extractSessionId(stdout: string): string | undefined {
+  const line = findLastJsonLine(stdout);
+  if (!line) return undefined;
+  try {
+    const obj = JSON.parse(line) as Record<string, unknown>;
+    return typeof obj.session_id === "string" ? obj.session_id : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Mechanical backup for the haiku arm's delegation check: counts session
+ * transcripts under ~/.claude/projects/<slug>/ that are NOT the orchestrator's
+ * own session. Each worker `claude -p` run in the same cwd writes its own
+ * <session-id>.jsonl there, so a count > 0 confirms the orchestrator really
+ * spawned worker(s) even independent of the .delegate/ files. The workdir is
+ * unique per run (mkdtemp), so its project dir holds only this run's sessions.
+ */
+function countWorkerSessions(workdirRealpath: string, orchestratorSessionId: string | undefined): number {
+  const slug = workdirRealpath.replace(/[^A-Za-z0-9-]/g, "-");
+  try {
+    let count = 0;
+    for (const f of fs.readdirSync(path.join(CLAUDE_PROJECTS_DIR, slug))) {
+      if (!f.endsWith(".jsonl")) continue;
+      if (f.slice(0, -".jsonl".length) !== orchestratorSessionId) count++;
+    }
+    return count;
+  } catch {
+    return 0; // project dir absent → no sessions recorded (or headless disables transcripts)
+  }
+}
+
 async function runTask(agent: string, taskDir: string, keep: boolean): Promise<TaskResult> {
   const spec: TaskSpec = JSON.parse(fs.readFileSync(path.join(taskDir, "task.json"), "utf8"));
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), `lh-eval-${spec.name}-`));
@@ -367,17 +529,26 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     if (f.includes("test")) testHashes.set(f, sha(path.join(workdir, f)));
   }
 
-  // claude-delegate: hand the spawned Claude Code an isolated LH_HOME that
-  // outlives the (deleted) workdir, so we can read the local side back after
-  // the run and delegation sessions never mix into the user's ~/.localrig.
-  // Wiped per run so an earlier run's sessions can't be miscounted as this
-  // run's. Also widen the Bash tool's timeout ceiling so Claude can actually
-  // wait out a multi-minute `lh` call.
-  const isDelegate = agent === "claude-delegate";
+  // Real path (macOS symlinks /var→/private/var, /tmp→/private/tmp); Claude Code
+  // slugs the resolved cwd for its ~/.claude/projects dir, so we need the same.
+  const workdirReal = fs.realpathSync(workdir);
+
+  // Every delegate arm gets an isolated LH_HOME that outlives the (deleted)
+  // workdir, so we can read the local side back and delegation sessions never
+  // mix into the user's ~/.localrig. Wiped per run so an earlier run's sessions
+  // can't be miscounted as this run's. Also widen the Bash tool's timeout
+  // ceiling so the orchestrator can wait out a multi-minute worker call.
+  // For the haiku arm this LH_HOME should stay EMPTY — the worker is `claude`,
+  // not `lh` — so any session appearing here means the orchestrator wrongly
+  // called `lh`, which collectDelegationMetrics surfaces as visible contamination.
+  const isDelegate = isDelegateArm(agent);
+  const isHaiku = agent === "claude-delegate-haiku";
   const env: NodeJS.ProcessEnv = { ...process.env };
   let lhHome: string | undefined;
   if (isDelegate) {
-    lhHome = path.join(LH_HOME_ROOT, spec.name);
+    // Suffix keeps arms from sharing an LH_HOME (claude-delegate → <task>,
+    // claude-delegate-haiku → <task>-haiku).
+    lhHome = path.join(LH_HOME_ROOT, spec.name + agent.slice("claude-delegate".length));
     fs.rmSync(lhHome, { recursive: true, force: true });
     fs.mkdirSync(lhHome, { recursive: true });
     env.LH_HOME = lhHome;
@@ -406,7 +577,22 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
   fs.writeFileSync(path.join(RESULTS_DIR, `${agent}-${spec.name}.log`), agentRun.output);
 
   const metrics = extractStructuredMetrics(agent, spec.name, agentRun.stdout);
-  const delegation = isDelegate && lhHome ? collectDelegationMetrics(lhHome) : undefined;
+
+  // Delegation view. For the lh arm this is the whole story. For the haiku arm
+  // we additionally collect worker JSONs (before workdir deletion) and derive
+  // `delegated` from workers, not from lh sessions — a non-empty `delegations`
+  // there means contamination (orchestrator wrongly called `lh`).
+  let delegation: Partial<TaskResult> | undefined;
+  if (isDelegate && lhHome) {
+    const lhSide = collectDelegationMetrics(lhHome);
+    if (isHaiku) {
+      const workers = collectWorkerMetrics(workdir, spec.name);
+      const workerSessions = countWorkerSessions(workdirReal, extractSessionId(agentRun.stdout));
+      delegation = { ...lhSide, workers, workerSessions, delegated: workers.length > 0 };
+    } else {
+      delegation = lhSide;
+    }
+  }
 
   if (!keep) fs.rmSync(workdir, { recursive: true, force: true });
   return {

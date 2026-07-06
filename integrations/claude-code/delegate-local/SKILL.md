@@ -20,20 +20,27 @@ Do NOT delegate: multi-file design work, anything requiring project-wide context
 ## How to call
 
 ```bash
-lh -p "<task>" --json --cwd /abs/path/to/project
+lh -p - --json --cwd /abs/path/to/project --kind bugfix --check "bun test test/foo.test.ts" <<'EOF'
+<task>
+EOF
 ```
 
 - Write the prompt like a work order for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. One task per call.
-- `--json` prints a single JSON object on stdout: `session_id`, `status` (`ok` | `max_iterations` | `loop_abort` | ...), `result`, `duration_ms`, `tokens`, and a ready-made `feedback_command`.
-- Use a Bash timeout of at least 600000 ms; for bigger tasks use `run_in_background` and collect the output later.
+- Use `-p -` with a heredoc for non-trivial prompts; it avoids shell-quoting accidents in work orders.
+- Always add `--kind <kind>` so `lh stats --by-kind` can show which work types are reliable. Recommended kinds: `rename`, `tests`, `docs`, `types`, `perf`, `bugfix`, `other`.
+- Add `--check "<acceptance command>"` whenever the task has a commandable definition of done. LocalRig runs it after the agent finishes and feeds failures back to the model for up to `--check-retries` attempts (default 2).
+- `--json` prints a single JSON object on stdout: `session_id`, `status` (`ok` | `check_failed` | `max_iterations` | `loop_abort` | ...), `result`, `check`, `report`, `duration_ms`, `tokens`, and a ready-made `feedback_command`.
+- `report.changed_files` lists files changed through the write/edit tools, and `report.commands_run` lists bash commands the local agent ran. Bash-side file changes (`rm`, `mv`, generated files) are not tracked there, so still inspect the diff.
+- Use a Bash timeout of at least 600000 ms. For bigger tasks prefer `lh submit -p - ... --json`, do other work, then `lh wait <session_id> --json` (or `lh poll <session_id> --json` to check without blocking); local 27B inference is still effectively serial on one Ollama host.
 - Add `--auto` to make the local agent refuse dangerous bash commands instead of running them (recommended when delegating into repos with scripts you haven't read).
 - Exit code 0 means the agent believes it finished; non-zero means it stopped early — treat the work as incomplete.
 
 ## Verify — never trust the result blindly
 
 Before using or committing anything the local agent produced, and **before you record a `pass`**:
-1. `git diff` (or read the touched files) in the target repo.
-2. Run the **exact** acceptance command from the task (tests, typecheck, grep) — do not settle for a semantic "looks right" review. If the task states a strict output-format requirement (an exact first line, a specific filename, an exact string), re-check that literal requirement, not just the meaning. A shallow semantic review has been observed to accept work that satisfied the intent but violated a format gate, and then record a false `pass`.
+1. Require `status === "ok"` and, when `--check` was supplied, `check.exit_code === 0`.
+2. Read `report.changed_files` and inspect `git diff` (or read the touched files) in the target repo. Confirm there are no unexpected files.
+3. Re-run the exact acceptance command yourself only when `--check` is absent, failed, flaky, or security-sensitive. If the task states a strict output-format requirement (an exact first line, a specific filename, an exact string), re-check that literal requirement, not just the meaning. A shallow semantic review has been observed to accept work that satisfied the intent but violated a format gate, and then record a false `pass`.
 
 ## Feedback — REQUIRED after every delegation
 
@@ -50,4 +57,4 @@ lh feedback <session_id> fail --source claude-code --notes "edited wrong file; h
 
 ## Calibrate
 
-`lh stats` shows the historical pass rate and recent failure notes. If the pass rate for a kind of task is poor, stop delegating that kind. `lh sessions` lists recent runs when you lost a session id.
+`lh stats --by-kind` shows pass rate and average duration by task kind. If the pass rate for a kind of task is poor, stop delegating that kind. `lh sessions` lists recent runs when you lost a session id.
