@@ -36,8 +36,13 @@ One-shot flags:
   --cwd DIR                 run in DIR instead of the current directory
   --model NAME              override model (default: ${defaultConfig.model})
   --num-ctx N               context window (default: ${defaultConfig.numCtx})
+  --num-predict N           max tokens generated per turn (default: ${defaultConfig.numPredict})
   --temperature T           sampling temperature (default: ${defaultConfig.temperature})
+  --presence-penalty P      anti-repetition penalty (default: ${defaultConfig.presencePenalty})
   --max-iterations N        agent loop cap (default: ${defaultConfig.maxIterations})
+  --max-time SECONDS        wall-clock budget; 0 disables (default: ${defaultConfig.maxTimeMs / 1000})
+  --think-budget CHARS      abort a turn if thinking exceeds this before output (default: ${defaultConfig.thinkBudgetChars})
+  --headroom TOKENS         tokens reserved above usage for the next reply (default: ${defaultConfig.headroomTokens})
   --auto                    deny dangerous bash instead of the default
                             approve-everything (one-shot cannot prompt)
   --yolo                    approve all mutating tools (one-shot default)
@@ -71,11 +76,26 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--num-ctx":
         config.numCtx = Number(argv[++i]);
         break;
+      case "--num-predict":
+        config.numPredict = Number(argv[++i]);
+        break;
       case "--temperature":
         config.temperature = Number(argv[++i]);
         break;
+      case "--presence-penalty":
+        config.presencePenalty = Number(argv[++i]);
+        break;
       case "--max-iterations":
         config.maxIterations = Number(argv[++i]);
+        break;
+      case "--max-time":
+        config.maxTimeMs = Number(argv[++i]) * 1000;
+        break;
+      case "--think-budget":
+        config.thinkBudgetChars = Number(argv[++i]);
+        break;
+      case "--headroom":
+        config.headroomTokens = Number(argv[++i]);
         break;
       case "--cwd":
         opts.cwd = argv[++i];

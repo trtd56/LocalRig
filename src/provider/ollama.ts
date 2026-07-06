@@ -48,7 +48,7 @@ export class OllamaClient {
     onChunk: (chunk: ChatChunk) => void,
     signal: AbortSignal,
   ): Promise<ChatResponse> {
-    const body = {
+    const body: Record<string, unknown> = {
       model: this.model,
       stream: true,
       options: {
@@ -57,6 +57,7 @@ export class OllamaClient {
         temperature: options.temperature,
         top_p: options.top_p,
         top_k: options.top_k,
+        presence_penalty: options.presence_penalty,
       },
       messages: messages.map(wireMessage),
       tools: tools.map((t) => ({
@@ -64,6 +65,9 @@ export class OllamaClient {
         function: { name: t.name, description: t.description, parameters: t.parameters },
       })),
     };
+    // Only send `think` when the caller set it explicitly — omitting it lets
+    // the model use its default (thinking on for this Qwen build).
+    if (options.think !== undefined) body.think = options.think;
 
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
@@ -116,7 +120,10 @@ export class OllamaClient {
           content += m.content;
           onChunk({ content: m.content });
         }
-        if (m?.tool_calls) toolCalls.push(...m.tool_calls);
+        if (m?.tool_calls) {
+          toolCalls.push(...m.tool_calls);
+          onChunk({ toolCall: true });
+        }
         if (parsed.done) {
           promptTokens = parsed.prompt_eval_count ?? 0;
           evalTokens = parsed.eval_count ?? 0;

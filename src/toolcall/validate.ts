@@ -11,15 +11,10 @@ export type ResolvedCall =
   | { ok: false; name: string; problem: string };
 
 /**
- * Resolve a (possibly malformed) tool call against the registry.
- * `maxRepairAttempts` is currently informational — the error text always
- * includes a valid example so the model can self-repair.
+ * Resolve a (possibly malformed) tool call against the registry. Never throws:
+ * the error text always includes a valid example so the model can self-repair.
  */
-export function resolveToolCall(
-  call: ToolCall,
-  tools: ToolDef[],
-  _maxRepairAttempts: number,
-): ResolvedCall {
+export function resolveToolCall(call: ToolCall, tools: ToolDef[]): ResolvedCall {
   const rawName = call.function?.name ?? "";
 
   // ---- 1. Tool name ----

@@ -9,14 +9,15 @@ export function createWriteTool(_config: Config): ToolDef {
     mutating: true,
     description:
       "Write a file (creates it, or fully replaces its contents). Parent directories are created automatically. " +
-      'Args: path (required), content (required, the COMPLETE new file contents). ' +
+      'Args: path (required), content (required, the COMPLETE new file contents), overwrite (optional). ' +
       'Example: {"path": "src/util.ts", "content": "export const x = 1;\\n"}. ' +
-      "To change part of an existing file, use the edit tool instead.",
+      "To change part of an existing file, use the edit tool instead — full rewrites frequently drop existing code.",
     parameters: {
       type: "object",
       properties: {
         path: { type: "string", description: "File path, absolute or relative to the working directory" },
         content: { type: "string", description: "Complete new file contents" },
+        overwrite: { type: "boolean", description: "Required to replace an existing file of 30+ lines" },
       },
       required: ["path", "content"],
     },
@@ -33,19 +34,42 @@ export function createWriteTool(_config: Config): ToolDef {
             output: 'Missing "content" (must be a string — the complete file contents). Call write like: {"path": "src/util.ts", "content": "..."}',
           };
         }
+        const overwrite = args.overwrite === true;
         const abs = path.resolve(ctx.cwd, p);
         const rel = relPath(ctx.cwd, abs);
 
-        let existedUnread = false;
+        // Inspect any existing file so we can no-op identical writes and guard
+        // against full rewrites that silently drop code.
+        let existing: string | null = null;
         try {
           const st = await fs.stat(abs);
           if (st.isDirectory()) {
             return { ok: false, output: `${abs} is a directory. Pass a file path instead.` };
           }
-          if (!ctx.readFiles.has(abs)) existedUnread = true;
+          existing = await fs.readFile(abs, "utf8");
         } catch {
-          // does not exist — fine
+          // does not exist (or unreadable) — treat as a new file
         }
+
+        if (existing !== null) {
+          // Identical content: don't touch disk (kills duplicate rewrites).
+          if (existing === content) {
+            ctx.readFiles.set(abs, Date.now());
+            return { ok: true, output: "No change: file already contains exactly this content.", display: `no change ${rel}` };
+          }
+          const existingLines = countLines(existing);
+          if (existingLines >= 30 && !overwrite) {
+            return {
+              ok: false,
+              output:
+                `${abs} already exists (${existingLines} lines). Use edit for targeted changes — ` +
+                `full rewrites of existing files frequently drop existing code. If you truly need to ` +
+                `replace the entire file, re-issue write with overwrite: true and the COMPLETE file contents.`,
+            };
+          }
+        }
+
+        const existedUnread = existing !== null && !ctx.readFiles.has(abs);
 
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, content, "utf8");

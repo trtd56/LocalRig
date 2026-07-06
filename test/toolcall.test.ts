@@ -94,7 +94,7 @@ function mk(name: string, args: Record<string, unknown> | string): ToolCall {
 }
 
 function resolve(name: string, args: Record<string, unknown> | string): ResolvedCall {
-  return resolveToolCall(mk(name, args), TOOLS, 3);
+  return resolveToolCall(mk(name, args), TOOLS);
 }
 
 function expectOk(r: ResolvedCall): Extract<ResolvedCall, { ok: true }> {

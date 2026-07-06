@@ -1,0 +1,73 @@
+// Tests for config defaults, env-var parsing, and CLI flag parsing.
+
+import { describe, expect, test } from "bun:test";
+import * as path from "node:path";
+import { defaultConfig } from "../src/config.ts";
+import { parseArgs } from "../src/index.ts";
+
+describe("defaultConfig", () => {
+  test("new knobs have their documented defaults", () => {
+    expect(defaultConfig.thinkBudgetChars).toBe(6000);
+    expect(defaultConfig.presencePenalty).toBe(1.0);
+    expect(defaultConfig.maxTimeMs).toBe(0);
+    expect(defaultConfig.headroomTokens).toBe(4096);
+    expect(defaultConfig.numPredict).toBe(16384);
+    expect(defaultConfig.numCtx).toBe(32768);
+  });
+
+  test("dead maxRepairAttempts knob is gone", () => {
+    expect("maxRepairAttempts" in defaultConfig).toBe(false);
+  });
+});
+
+describe("parseArgs (CLI flags)", () => {
+  test("--max-time is seconds, stored as ms", () => {
+    expect(parseArgs(["-p", "x", "--max-time", "1500"]).config.maxTimeMs).toBe(1_500_000);
+  });
+
+  test("--presence-penalty, --think-budget, --headroom, --num-predict", () => {
+    const { config } = parseArgs([
+      "-p", "x",
+      "--presence-penalty", "0.3",
+      "--think-budget", "8000",
+      "--headroom", "2048",
+      "--num-predict", "4096",
+    ]);
+    expect(config.presencePenalty).toBe(0.3);
+    expect(config.thinkBudgetChars).toBe(8000);
+    expect(config.headroomTokens).toBe(2048);
+    expect(config.numPredict).toBe(4096);
+  });
+
+  test("defaults survive when flags are absent", () => {
+    const { config } = parseArgs(["-p", "x"]);
+    expect(config.maxTimeMs).toBe(defaultConfig.maxTimeMs);
+    expect(config.thinkBudgetChars).toBe(defaultConfig.thinkBudgetChars);
+    expect(config.presencePenalty).toBe(defaultConfig.presencePenalty);
+    expect(config.headroomTokens).toBe(defaultConfig.headroomTokens);
+  });
+});
+
+describe("env-var parsing", () => {
+  test("env overrides are read at module load (subprocess, no network)", () => {
+    const configPath = path.join(import.meta.dir, "..", "src", "config.ts");
+    const code = `const m = await import(${JSON.stringify(configPath)}); console.log(JSON.stringify(m.defaultConfig));`;
+    const proc = Bun.spawnSync([process.execPath, "-e", code], {
+      env: {
+        ...process.env,
+        LH_THINK_BUDGET: "1234",
+        LH_HEADROOM: "999",
+        LH_PRESENCE_PENALTY: "0.5",
+        LH_MAX_TIME: "42",
+        LH_NUM_CTX: "65536",
+      },
+    });
+    expect(proc.exitCode).toBe(0);
+    const out = JSON.parse(proc.stdout.toString().trim());
+    expect(out.thinkBudgetChars).toBe(1234);
+    expect(out.headroomTokens).toBe(999);
+    expect(out.presencePenalty).toBe(0.5);
+    expect(out.maxTimeMs).toBe(42_000); // seconds → ms
+    expect(out.numCtx).toBe(65536);
+  });
+});

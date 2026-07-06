@@ -52,8 +52,11 @@ export class ContextManager {
     private client: OllamaClient,
   ) {}
 
-  /** Record real token counts after a completed model turn. */
+  /** Record real token counts after a completed model turn. A turn aborted
+   *  mid-thinking has no prompt_eval_count, so skip it to avoid corrupting the
+   *  calibration EMA with a zero measurement. */
   recordUsage(messages: ChatMessage[], promptTokens: number, evalTokens: number): void {
+    if (promptTokens <= 0) return;
     for (let i = messages.length - 1; i >= 0; i--) {
       const m = messages[i]!;
       if (m.role === "assistant") {
@@ -127,7 +130,7 @@ export class ContextManager {
   // ---------------------------------------------------------------- internal
 
   private totalWithHeadroom(messages: ChatMessage[]): number {
-    return this.ledger.estimateTotal(messages) + this.config.numPredict;
+    return this.ledger.estimateTotal(messages) + this.config.headroomTokens;
   }
 
   private pruneToolMessage(m: ChatMessage): void {

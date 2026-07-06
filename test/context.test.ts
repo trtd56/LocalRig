@@ -16,6 +16,9 @@ function cfg(overrides: Partial<Config> = {}): Config {
     ...defaultConfig,
     numCtx: 2000,
     numPredict: 100,
+    // Gates reserve headroomTokens (not the full num_predict) above the
+    // current estimate; keep it small so these tiny-numCtx tests trip cleanly.
+    headroomTokens: 100,
     pruneAt: 0.75,
     compactAt: 0.85,
     keepRecentMessages: 4,
@@ -136,6 +139,60 @@ describe("manage: below threshold", () => {
     expect(messages).toEqual(snapshot);
     expect(events.length).toBe(0);
     expect(calls.length).toBe(0);
+  });
+});
+
+describe("manage: headroom gate math", () => {
+  // The gate is `estimateTotal + headroomTokens >= pruneAt * numCtx`. Build a
+  // fixed transcript, measure its estimate, then size numCtx so the prune gate
+  // sits just above the estimate — headroom decides whether it trips.
+  const bigOld = "x".repeat(16_000); // prunable old tool output (> PRUNE_MIN_CHARS)
+  function build(): ChatMessage[] {
+    return [
+      msg("system", "sys"),
+      msg("user", "do the task"),
+      msg("tool", bigOld, { tool_name: "bash" }),
+      // tail: last keepRecentMessages (4) are protected from pruning
+      msg("assistant", "working"),
+      msg("tool", "small tail output", { tool_name: "read_file" }),
+      msg("assistant", "ok"),
+      msg("user", "continue"),
+    ];
+  }
+  const estimate = new TokenLedger().estimateTotal(build());
+  const numCtx = Math.ceil((estimate + 300) / 0.75); // prune gate ≈ estimate + 300
+
+  test("no prune when estimate + headroom stays below the gate", async () => {
+    const { client, calls } = fakeClient(async () => GOOD_SUMMARY);
+    const cm = new ContextManager(cfg({ numCtx, headroomTokens: 100 }), client);
+    const { events, onEvent } = collect();
+    const messages = build();
+    await cm.manage(messages, onEvent, signal);
+    expect(events.length).toBe(0);
+    expect(messages[2]!._pruned).toBeUndefined();
+    expect(calls.length).toBe(0);
+  });
+
+  test("prune fires once headroom pushes the total over the gate", async () => {
+    const { client } = fakeClient(async () => GOOD_SUMMARY);
+    const cm = new ContextManager(cfg({ numCtx, headroomTokens: 600 }), client);
+    const { events, onEvent } = collect();
+    const messages = build();
+    await cm.manage(messages, onEvent, signal);
+    expect(events.some((e) => e.type === "prune")).toBe(true);
+    expect(events.some((e) => e.type === "compact")).toBe(false);
+    expect(messages[2]!._pruned).toBe(true);
+  });
+
+  test("num_predict no longer affects the gate", async () => {
+    // A huge num_predict must NOT trip the gate — only headroomTokens does.
+    const { client } = fakeClient(async () => GOOD_SUMMARY);
+    const cm = new ContextManager(cfg({ numCtx, headroomTokens: 100, numPredict: 100_000 }), client);
+    const { events, onEvent } = collect();
+    const messages = build();
+    await cm.manage(messages, onEvent, signal);
+    expect(events.length).toBe(0);
+    expect(messages[2]!._pruned).toBeUndefined();
   });
 });
 

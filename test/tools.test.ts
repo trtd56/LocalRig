@@ -211,6 +211,80 @@ describe("write tool", () => {
     expect(res.output).toContain("[warning] overwrote existing file that was never read");
     expect(fs.readFileSync(path.join(dir, "f.txt"), "utf8")).toBe("new");
   });
+
+  test("identical content is a no-op that never touches disk", async () => {
+    const dir = subdir("write-identical");
+    const file = path.join(dir, "f.txt");
+    fs.writeFileSync(file, "same\ncontent\n");
+    const before = fs.statSync(file).mtimeMs;
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("write")!.execute({ path: "f.txt", content: "same\ncontent\n" }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toBe("No change: file already contains exactly this content.");
+    expect(fs.statSync(file).mtimeMs).toBe(before); // untouched
+  });
+
+  test("rejects full rewrite of an existing 30+ line file without overwrite", async () => {
+    const dir = subdir("write-guard");
+    const orig = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n") + "\n";
+    const file = path.join(dir, "big.ts");
+    fs.writeFileSync(file, orig);
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("write")!.execute({ path: "big.ts", content: "export const x = 1;\n" }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain("already exists (40 lines)");
+    expect(res.output).toContain("Use edit for targeted changes");
+    expect(res.output).toContain("overwrite: true");
+    // File must be untouched by the rejected write.
+    expect(fs.readFileSync(file, "utf8")).toBe(orig);
+  });
+
+  test("rejects at exactly the 30-line boundary", async () => {
+    const dir = subdir("write-guard-boundary");
+    const orig = Array.from({ length: 30 }, (_, i) => `line ${i}`).join("\n") + "\n";
+    const file = path.join(dir, "b.ts");
+    fs.writeFileSync(file, orig);
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("write")!.execute({ path: "b.ts", content: "x\n" }, ctx);
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain("already exists (30 lines)");
+    expect(fs.readFileSync(file, "utf8")).toBe(orig);
+  });
+
+  test("accepts full rewrite of a 30+ line file with overwrite: true", async () => {
+    const dir = subdir("write-guard-ok");
+    const orig = Array.from({ length: 40 }, (_, i) => `line ${i}`).join("\n") + "\n";
+    const file = path.join(dir, "big.ts");
+    fs.writeFileSync(file, orig);
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools
+      .get("write")!
+      .execute({ path: "big.ts", content: "export const x = 1;\n", overwrite: true }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("wrote 1 lines to");
+    expect(fs.readFileSync(file, "utf8")).toBe("export const x = 1;\n");
+  });
+
+  test("rewrites an existing under-30-line file freely (no overwrite needed)", async () => {
+    const dir = subdir("write-small");
+    const file = path.join(dir, "small.ts");
+    fs.writeFileSync(file, Array.from({ length: 29 }, (_, i) => `l${i}`).join("\n") + "\n");
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("write")!.execute({ path: "small.ts", content: "one line\n" }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("wrote 1 lines to");
+    expect(fs.readFileSync(file, "utf8")).toBe("one line\n");
+  });
+
+  test("new file is unaffected by the guardrail (large content is fine)", async () => {
+    const dir = subdir("write-new-big");
+    const big = Array.from({ length: 100 }, (_, i) => `line ${i}`).join("\n") + "\n";
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("write")!.execute({ path: "brand-new.ts", content: big }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("wrote 100 lines to");
+    expect(fs.readFileSync(path.join(dir, "brand-new.ts"), "utf8")).toBe(big);
+  });
 });
 
 // ---------------------------------------------------------------------------

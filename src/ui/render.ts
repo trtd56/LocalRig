@@ -71,6 +71,10 @@ export function createRenderer(
         ensureNewline();
         out.write(c.yellow(`  ⚠ ${e.message}`) + "\n");
         break;
+      case "thinking_interrupt":
+        ensureNewline();
+        out.write(c.yellow(`  ⚠ thinking budget exceeded (${e.budgetChars} chars) — interrupting`) + "\n");
+        break;
       case "prune":
         ensureNewline();
         out.write(c.dim(`· pruned old tool output (~${e.freedTokens} tokens freed)`) + "\n");

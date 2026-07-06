@@ -88,6 +88,10 @@ export interface ChatRequestOptions {
   num_ctx: number;
   /** Max tokens to generate per turn. */
   num_predict?: number;
+  /** Qwen anti-repetition lever (Ollama options.presence_penalty). */
+  presence_penalty?: number;
+  /** Toggle the model's reasoning phase. Sent only when explicitly set. */
+  think?: boolean;
 }
 
 export interface ChatChunk {
@@ -95,6 +99,8 @@ export interface ChatChunk {
   content?: string;
   /** Incremental thinking text. */
   thinking?: string;
+  /** Set once native tool-call tokens start arriving (real output began). */
+  toolCall?: boolean;
 }
 
 export interface ChatResponse {
@@ -111,6 +117,7 @@ export interface ChatResponse {
 export type RunStatus =
   | "ok"
   | "max_iterations"
+  | "timeout"
   | "loop_abort"
   | "interrupted"
   | "empty"
@@ -126,6 +133,7 @@ export type AgentEvent =
   | { type: "tool_end"; name: string; result: ToolResult }
   | { type: "repair"; problem: string }
   | { type: "loop_warning"; message: string }
+  | { type: "thinking_interrupt"; budgetChars: number }
   | { type: "prune"; freedTokens: number }
   | { type: "compact"; beforeTokens: number; afterTokens: number }
   | { type: "status"; message: string }

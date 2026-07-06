@@ -1,5 +1,13 @@
 import type { Config } from "./config.ts";
-import type { AgentEvent, ChatMessage, RunStatus, ToolContext, ToolDef, ToolResult } from "./types.ts";
+import type {
+  AgentEvent,
+  ChatMessage,
+  ChatResponse,
+  RunStatus,
+  ToolContext,
+  ToolDef,
+  ToolResult,
+} from "./types.ts";
 import { OllamaClient } from "./provider/ollama.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
 import { createTools, renderTodos } from "./tools/registry.ts";
@@ -14,6 +22,30 @@ export type PermissionFn = (
   args: Record<string, unknown>,
   display: string,
 ) => Promise<boolean>;
+
+/** Injected after the watchdog aborts a runaway reasoning block. */
+const THINKING_INTERRUPT_NUDGE =
+  "[system] Your reasoning was interrupted for length. Do not re-derive the analysis from scratch. " +
+  "State your current best hypothesis in 1-2 sentences, then immediately verify it with a tool call " +
+  "(e.g. run the relevant test or command).";
+
+/**
+ * Decide whether to abort the current streaming turn mid-thinking. Thinking
+ * always streams before any content/tool-call tokens, so once real output has
+ * begun we leave the turn alone. Pure so the decision table is unit-testable.
+ */
+export function shouldInterruptThinking(params: {
+  thinkingChars: number;
+  budgetChars: number;
+  sawOutput: boolean;
+  interruptionsSoFar: number;
+}): boolean {
+  const { thinkingChars, budgetChars, sawOutput, interruptionsSoFar } = params;
+  if (budgetChars <= 0) return false; // watchdog disabled
+  if (sawOutput) return false; // real output already began this turn
+  if (interruptionsSoFar >= 2) return false; // never interrupt more than twice
+  return thinkingChars > budgetChars;
+}
 
 export class Agent {
   private messages: ChatMessage[] = [];
@@ -67,43 +99,44 @@ export class Agent {
     this.lastRunStatus = "error"; // overwritten on every graceful exit path
     this.push({ role: "user", content: userInput });
     this.loopDetector.reset();
+    const startTime = Date.now();
 
     for (let iteration = 0; iteration <= this.config.maxIterations; iteration++) {
-      // Last iteration: force a text-only wrap-up instead of dropping the session.
-      const wrapUp = iteration === this.config.maxIterations;
+      // Force a text-only wrap-up (instead of dropping the session) on the last
+      // iteration or once the wall-clock budget is exhausted.
+      const timedOut =
+        this.config.maxTimeMs > 0 && Date.now() - startTime > this.config.maxTimeMs;
+      const wrapUp = iteration === this.config.maxIterations || timedOut;
       if (wrapUp) {
         this.push({
           role: "user",
           content:
-            "[system] CRITICAL - maximum steps reached. Do NOT make any tool calls. Respond with text only: summarize what was accomplished, what remains, and any blockers.",
+            "[system] CRITICAL - stopping now (step or time budget reached). Do NOT make any tool calls. Respond with text only: summarize what was accomplished, what remains, and any blockers.",
         });
       }
       await this.contextManager.manage(this.messages, this.onEvent, this.abort.signal);
 
-      let response;
-      try {
-        response = await this.client.chat(
-          this.messages,
-          this.tools,
-          {
-            num_ctx: this.config.numCtx,
-            num_predict: this.config.numPredict,
-            temperature: this.config.temperature,
-            top_p: this.config.topP,
-            top_k: this.config.topK,
-          },
-          (chunk) => {
-            if (chunk.thinking) this.onEvent({ type: "thinking_delta", text: chunk.thinking });
-            if (chunk.content) this.onEvent({ type: "content_delta", text: chunk.content });
-          },
-          this.abort.signal,
-        );
-      } catch (err) {
-        if (this.abort.signal.aborted) {
+      // Stream the model turn, retrying if the thinking watchdog interrupts a
+      // runaway reasoning block. Wrap-up turns disable thinking outright; the
+      // second interruption in a turn does the same before retrying.
+      let response: ChatResponse;
+      let interruptions = 0;
+      let think: boolean | undefined = wrapUp ? false : undefined;
+      for (;;) {
+        const turn = await this.streamTurn(think, interruptions);
+        if (turn.kind === "user_abort") {
           this.lastRunStatus = "interrupted";
           return "[interrupted]";
         }
-        throw err;
+        if (turn.kind === "response") {
+          response = turn.response;
+          break;
+        }
+        // Watchdog interrupted mid-thinking: record the nudge as a normal
+        // message and retry. First retry keeps thinking; second turns it off.
+        interruptions++;
+        this.push({ role: "user", content: THINKING_INTERRUPT_NUDGE });
+        if (interruptions >= 2) think = false;
       }
       this.onEvent({ type: "turn_end" });
 
@@ -118,8 +151,11 @@ export class Agent {
       });
 
       if (wrapUp) {
-        this.lastRunStatus = "max_iterations";
-        return msg.content || "[stopped: reached max iterations]";
+        this.lastRunStatus = timedOut ? "timeout" : "max_iterations";
+        return (
+          msg.content ||
+          (timedOut ? "[stopped: reached time budget]" : "[stopped: reached max iterations]")
+        );
       }
 
       // Fallback: some turns emit tool calls as text instead of native calls.
@@ -175,7 +211,7 @@ export class Agent {
           });
           continue;
         }
-        const resolved = resolveToolCall(call, this.tools, this.config.maxRepairAttempts);
+        const resolved = resolveToolCall(call, this.tools);
         if (!resolved.ok) {
           this.onEvent({ type: "repair", problem: resolved.problem });
           this.push({
@@ -209,6 +245,77 @@ export class Agent {
     }
     this.lastRunStatus = "max_iterations";
     return "[stopped: reached max iterations]";
+  }
+
+  /**
+   * Stream one model turn under the thinking watchdog. The watchdog gets its
+   * own AbortController; a user Ctrl+C (userSignal) is forwarded to it so both
+   * cancel the in-flight request, but we then read userSignal to tell a user
+   * abort apart from a watchdog interrupt. userSignal is captured up front:
+   * interrupt() swaps in a fresh this.abort, so re-reading it would inspect the
+   * wrong controller.
+   */
+  private async streamTurn(
+    think: boolean | undefined,
+    interruptionsSoFar: number,
+  ): Promise<
+    | { kind: "response"; response: ChatResponse }
+    | { kind: "interrupted" }
+    | { kind: "user_abort" }
+  > {
+    const userSignal = this.abort.signal;
+    const watchdog = new AbortController();
+    const onUserAbort = () => watchdog.abort();
+    userSignal.addEventListener("abort", onUserAbort, { once: true });
+
+    let thinkingChars = 0;
+    let sawOutput = false;
+    let interrupted = false;
+    try {
+      const response = await this.client.chat(
+        this.messages,
+        this.tools,
+        {
+          num_ctx: this.config.numCtx,
+          num_predict: this.config.numPredict,
+          temperature: this.config.temperature,
+          top_p: this.config.topP,
+          top_k: this.config.topK,
+          presence_penalty: this.config.presencePenalty,
+          think,
+        },
+        (chunk) => {
+          if (chunk.content || chunk.toolCall) sawOutput = true;
+          if (chunk.thinking) {
+            this.onEvent({ type: "thinking_delta", text: chunk.thinking });
+            thinkingChars += chunk.thinking.length;
+            if (
+              !interrupted &&
+              shouldInterruptThinking({
+                thinkingChars,
+                budgetChars: this.config.thinkBudgetChars,
+                sawOutput,
+                interruptionsSoFar,
+              })
+            ) {
+              interrupted = true;
+              this.onEvent({ type: "thinking_interrupt", budgetChars: this.config.thinkBudgetChars });
+              watchdog.abort();
+            }
+          }
+          if (chunk.content) this.onEvent({ type: "content_delta", text: chunk.content });
+        },
+        watchdog.signal,
+      );
+      return { kind: "response", response };
+    } catch (err) {
+      // A user Ctrl+C aborts userSignal (and, via the listener, the watchdog).
+      if (userSignal.aborted) return { kind: "user_abort" };
+      if (interrupted) return { kind: "interrupted" };
+      throw err;
+    } finally {
+      userSignal.removeEventListener("abort", onUserAbort);
+    }
   }
 
   private async executeCall(resolved: ResolvedCall & { ok: true }): Promise<ToolResult> {
