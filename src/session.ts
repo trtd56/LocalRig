@@ -170,6 +170,9 @@ export interface Stats {
   graded: number;
   pass: number;
   fail: number;
+  /** Pass rate as an integer percentage (0-100), or null when nothing is graded.
+   *  Lets a caller read "is fail the majority for this kind" straight from JSON. */
+  rate: number | null;
   recentFailures: FeedbackRecord[];
   byKind?: KindStats[];
 }
@@ -179,7 +182,14 @@ export interface KindStats {
   graded: number;
   pass: number;
   fail: number;
+  /** Pass rate as an integer percentage (0-100), or null when graded is 0. */
+  rate: number | null;
   avgDurationMs: number;
+}
+
+/** Pass rate as an integer percentage, or null when there is nothing graded. */
+function passRate(pass: number, graded: number): number | null {
+  return graded > 0 ? Math.round((100 * pass) / graded) : null;
 }
 
 /** Aggregate pass/fail over all recorded feedback (re-grades: last one wins). */
@@ -194,6 +204,7 @@ export function computeStats(options: { byKind?: boolean } = {}): Stats {
     graded: graded.length,
     pass,
     fail: graded.length - pass,
+    rate: passRate(pass, graded.length),
     recentFailures: failures,
   };
   if (options.byKind) stats.byKind = computeKindStats(graded);
@@ -218,6 +229,7 @@ function computeKindStats(graded: FeedbackRecord[]): KindStats[] {
       graded: s.graded,
       pass: s.pass,
       fail: s.fail,
+      rate: passRate(s.pass, s.graded),
       avgDurationMs: s.graded > 0 ? Math.round(s.durationMs / s.graded) : 0,
     }))
     .sort((a, b) => a.kind.localeCompare(b.kind));

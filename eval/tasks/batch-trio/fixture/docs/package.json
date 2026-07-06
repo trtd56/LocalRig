@@ -1,0 +1,5 @@
+{
+  "name": "doc-sync-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

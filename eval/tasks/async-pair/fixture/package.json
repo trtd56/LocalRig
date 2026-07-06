@@ -1,0 +1,5 @@
+{
+  "name": "async-pair-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "batch-trio",
+  "prompt": "このリポジトリには独立した3つのサブプロジェクト docs/・typefix/・perf/ が同居しています。以下の3件を全て完了してください。3件は互いに独立しており、順不同で構いません。\n\n(1) docs/ のドキュメント同期: docs/README.md の Usage / Options セクションが docs/src/cli.ts の実装と食い違っています。実装を正として docs/README.md を修正し、オプション名・デフォルト値・使用例が実装と一致するようにしてください。実装に存在するのに README に記載が無いオプションも追記してください。docs/src/ と docs/test/ は変更禁止です。受け入れ: docs/README.md が docs/src/cli.ts と整合し、かつ `cd docs && bun test` が通ること。\n\n(2) typefix/ の型エラー解消: `cd typefix && bunx tsc --noEmit` を実行すると型エラーで失敗します。エラーを全て解消してください。ただし any 型・@ts-ignore・@ts-expect-error・as によるキャストの追加で回避することは禁止です。null ガードや型のナローイングなど正しい修正を行い、挙動は変えないでください(`cd typefix && bun test` は現在も通っており、修正後も通る必要があります)。typefix/tsconfig.json と typefix/test/ は変更禁止です。受け入れ: `cd typefix && bunx tsc --noEmit` と `cd typefix && bun test` がともに通ること。\n\n(3) perf/ の性能改善: perf/test/dupes.test.ts の \"large input\" テストが、大きな入力に対して findDuplicates の処理が遅すぎて制限時間内に完了せず失敗します。テストファイルは変更せず、perf/src/dupes.ts の findDuplicates のアルゴリズムを改善して全てのテストを通してください。関数のシグネチャと仕様(2回以上出現する要素を初出順に1回ずつ返す)は維持すること。受け入れ: `cd perf && bun test` が通ること。\n\n全体の受け入れコマンドは `bash test/verify.sh` です(3件すべてを AND 判定し、1件でも未達なら失敗します)。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "docs: README.md matches docs/src/cli.ts (flags/defaults/example), docs/src/cli.ts unchanged (sha256), cd docs && bun test passes",
+    "typefix: cd typefix && bunx tsc --noEmit passes, cd typefix && bun test passes, no any/@ts-ignore/@ts-expect-error/as-cast added under typefix/src, typefix/tsconfig.json unchanged (sha256)",
+    "perf: cd perf && bun test passes (large-input elapsed-time assertion within budget)",
+    "AND-gate: bash test/verify.sh fails if any one of the three is incomplete"
+  ]
+}

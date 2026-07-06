@@ -1,0 +1,5 @@
+{
+  "name": "perf-fix-fixture",
+  "type": "module",
+  "scripts": { "test": "bun test" }
+}

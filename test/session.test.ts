@@ -192,9 +192,48 @@ describe("feedback", () => {
     appendFeedback({ sessionId: "s3", verdict: "pass", createdAt: "t" });
     const stats = computeStats({ byKind: true });
     expect(stats.byKind).toEqual([
-      { kind: "(untagged)", graded: 1, pass: 1, fail: 0, avgDurationMs: 20_000 },
-      { kind: "rename", graded: 2, pass: 1, fail: 1, avgDurationMs: 20_000 },
+      { kind: "(untagged)", graded: 1, pass: 1, fail: 0, rate: 100, avgDurationMs: 20_000 },
+      { kind: "rename", graded: 2, pass: 1, fail: 1, rate: 50, avgDurationMs: 20_000 },
     ]);
+  });
+
+  test("stats reports pass rate as a percentage, null when nothing graded", () => {
+    expect(computeStats().rate).toBeNull();
+    for (const id of ["s1", "s2", "s3", "s4"]) saveSession(makeRecord(id));
+    appendFeedback({ sessionId: "s1", verdict: "pass", createdAt: "t" });
+    appendFeedback({ sessionId: "s2", verdict: "pass", createdAt: "t" });
+    appendFeedback({ sessionId: "s3", verdict: "pass", createdAt: "t" });
+    appendFeedback({ sessionId: "s4", verdict: "fail", createdAt: "t" });
+    expect(computeStats().rate).toBe(75);
+  });
+
+  test("by-kind rate lets a caller gate delegation on fail-majority (n>=3)", () => {
+    // doc-tweak: fail 3 / graded 4 → rate 25 (should NOT delegate)
+    // rename:    pass 3 / graded 3 → rate 100 (safe to delegate)
+    const docVerdicts: Array<"pass" | "fail"> = ["fail", "fail", "fail", "pass"];
+    docVerdicts.forEach((verdict, i) => {
+      const id = `d${i}`;
+      saveSession(makeRecord(id, { kind: "doc-tweak" }));
+      appendFeedback({ sessionId: id, verdict, kind: "doc-tweak", createdAt: "t" });
+    });
+    for (const i of [0, 1, 2]) {
+      const id = `r${i}`;
+      saveSession(makeRecord(id, { kind: "rename" }));
+      appendFeedback({ sessionId: id, verdict: "pass", kind: "rename", createdAt: "t" });
+    }
+
+    const byKind = computeStats({ byKind: true }).byKind!;
+    const doc = byKind.find((k) => k.kind === "doc-tweak")!;
+    const rename = byKind.find((k) => k.kind === "rename")!;
+    expect(doc.graded).toBe(4);
+    expect(doc.rate).toBe(25);
+    expect(rename.rate).toBe(100);
+
+    // The mechanical gate the SKILL/AGENTS guidance describes: skip a kind once
+    // it has enough signal (graded >= 3) and fail is the majority (rate < 50).
+    const skipDelegation = (k: typeof doc) => k.graded >= 3 && k.rate !== null && k.rate < 50;
+    expect(skipDelegation(doc)).toBe(true);
+    expect(skipDelegation(rename)).toBe(false);
   });
 });
 

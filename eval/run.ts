@@ -103,6 +103,49 @@ export const HAIKU_DELEGATE_NUDGE = `This run is a delegation measurement: you M
 4. In your final message, state how many worker calls you made and your pass/fail verdict on the worker's output.
 Never modify test files. The ONLY tool calls allowed before your first worker call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one worker attempt has returned.`;
 
+/**
+ * System-prompt append for the `claude-delegate-pair-sync` arm. The task has two
+ * INDEPENDENT parts (see the async-pair fixture): Part A is a mechanical migration
+ * that MUST be delegated to `lh`; Part B is a design write-up the orchestrator MUST
+ * do itself. Same delegation contract as DELEGATE_NUDGE for Part A (foreground
+ * `lh -p -`, Bash timeout 2100000 ms, --check, `lh feedback`, one task per call,
+ * no edits to Part A files before the call returns), but Part B is carved out as
+ * the orchestrator's own work. This is the SYNCHRONOUS pair baseline: delegate A
+ * and block on it, THEN do B — so A's local runtime and B's own work do not
+ * overlap. Compared against ASYNC_PAIR_NUDGE to measure the overlap win
+ * (fix_plan.md 課題3). Injected ONLY via `claude --append-system-prompt`; the
+ * task-facing prompt stays byte-identical to the baseline.
+ */
+export const SYNC_PAIR_NUDGE = `This run measures paired delegation. The task has two INDEPENDENT parts: Part A is a mechanical migration that you MUST delegate to the local \`lh\` CLI, and Part B is a design/reasoning write-up (a document the task asks you to author) that you MUST do YOURSELF. Delegating Part B, or doing Part A yourself, invalidates the run.
+1. Delegate Part A synchronously via Bash with stdin heredoc: lh -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command for Part A only>" --max-time 1800
+   Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-20 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. Scope the --check to Part A ONLY (do not point it at the full-task verifier), so the local agent is not pushed to do Part B. One task per call. Do NOT edit any Part A file (the modules being migrated) before this \`lh\` call returns.
+2. When it returns, do Part B YOURSELF: read the repository and write the document the task requires. This is your own work — do not delegate it. You may freely read and edit the Part B output file; do not touch Part A's files while doing Part B.
+3. Verify Part A cheaply: parse the JSON (session_id, status, result, check, report). If check.exit_code===0, do not rerun the acceptance command unless it is flaky or security-sensitive; inspect report.changed_files plus git diff for unexpected changes. Only if the delegated result is broken or incomplete may you fix the remaining Part A issues yourself with minimal edits.
+4. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
+Never modify test files. Before your first \`lh\` call, the only tool calls allowed are cheap reads needed to write the Part A work order; do not edit any Part A file before that call has returned. Part B (reading the repo and writing its document) is yours to do — that exemption does not extend to Part A.`;
+
+/**
+ * System-prompt append for the `claude-delegate-pair-async` arm. Identical paired
+ * contract to SYNC_PAIR_NUDGE (delegate Part A to \`lh\`, do Part B yourself, no
+ * edits to Part A files before the result is reaped, --check scoped to Part A,
+ * \`lh feedback\`), differing ONLY in the delegation procedure: instead of a
+ * blocking \`lh -p -\`, the orchestrator \`lh submit\`s Part A (returns immediately
+ * with a session_id), spends the local model's runtime doing Part B, then reaps
+ * with \`lh wait\`. This is the ASYNCHRONOUS pair arm — Part A's local runtime and
+ * Part B's own work OVERLAP, which is the win this arm measures vs. SYNC_PAIR_NUDGE
+ * (fix_plan.md 課題3). Injected ONLY via \`claude --append-system-prompt\`; the
+ * task-facing prompt stays byte-identical to the baseline.
+ */
+export const ASYNC_PAIR_NUDGE = `This run measures paired ASYNCHRONOUS delegation. The task has two INDEPENDENT parts: Part A is a mechanical migration that you MUST delegate to the local \`lh\` CLI, and Part B is a design/reasoning write-up (a document the task asks you to author) that you MUST do YOURSELF. Delegating Part B, or doing Part A yourself, invalidates the run.
+1. Submit Part A asynchronously via Bash with stdin heredoc: lh submit -p - --json --cwd <absolute cwd> --kind <rename|tests|docs|types|perf|bugfix|other> --check "<exact acceptance command for Part A only>" --max-time 1800
+   This returns immediately with a JSON object containing session_id (and pid) — capture the session_id. Write the work order like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done. Scope the --check to Part A ONLY (do not point it at the full-task verifier), so the local agent is not pushed to do Part B. One task per submit. Do NOT edit any Part A file (the modules being migrated) before you reap the result.
+2. While the local agent works, do NOT sit idle: do Part B YOURSELF. Read the repository and write the document the task requires — this is your own work, do not delegate it. You may freely read and edit the Part B output file, but do NOT touch Part A's files (the migration targets) while the local agent has them. Filling the local model's runtime with Part B is the entire point of this arm.
+3. Reap the result with: lh wait <session_id> --timeout 2000 --json
+   Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-30 minutes); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment. Parse the JSON (session_id, status, result, check, report). If check.exit_code===0, do not rerun the acceptance command unless it is flaky or security-sensitive; inspect report.changed_files plus git diff for unexpected changes.
+4. Verify Part A cheaply (report.changed_files / git diff / read touched files). Only if the delegated result is broken or incomplete may you fix the remaining Part A issues yourself with minimal edits.
+5. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
+Never modify test files. Before your first \`lh\` call, the only tool calls allowed are cheap reads needed to write the Part A work order; do not edit any Part A file before you have reaped the delegated result. Part B (reading the repo and writing its document) is yours to do during the wait — that exemption does not extend to Part A.`;
+
 /** True for every delegate arm (`claude-delegate`, `claude-delegate-haiku`, …). */
 function isDelegateArm(agent: string): boolean {
   return agent.startsWith("claude-delegate");
@@ -394,6 +437,8 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
     else if (agent === "claude-delegate-async") args.push("--append-system-prompt", ASYNC_DELEGATE_NUDGE);
     else if (agent === "claude-delegate-haiku") args.push("--append-system-prompt", HAIKU_DELEGATE_NUDGE);
+    else if (agent === "claude-delegate-pair-sync") args.push("--append-system-prompt", SYNC_PAIR_NUDGE);
+    else if (agent === "claude-delegate-pair-async") args.push("--append-system-prompt", ASYNC_PAIR_NUDGE);
     else if (isDelegateArm(agent)) throw new Error(`unknown delegate arm: ${agent} (no nudge defined)`);
     return { cmd: "claude", args };
   }

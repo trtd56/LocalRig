@@ -1,0 +1,7 @@
+{
+  "name": "type-repair-fixture",
+  "type": "module",
+  "scripts": {
+    "test": "bun test"
+  }
+}

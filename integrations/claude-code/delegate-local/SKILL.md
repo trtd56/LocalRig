@@ -9,9 +9,11 @@ description: Delegate small, mechanical, verifiable coding tasks to LocalRig via
 
 ## When to delegate
 
+**First, check the track record.** Before deciding, read `lh stats --by-kind --json` and find the entry for the `--kind` you would tag this task with. If that kind has `graded >= 3` and its pass `rate` is below 50 (fail is the majority), do NOT delegate: do the task yourself, or sharpen the work order — concrete file paths, an explicit definition of done, a `--check` command — and only then try again. With fewer than 3 graded runs the signal is too thin to act on; fall back to the criteria below.
+
 Delegate when ALL of these hold:
 - The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
-- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost — about $0.11–0.18 of *your own* tokens for writing the work order, verifying, and recording feedback — regardless of how big the task is. So it only pays when doing the task yourself would cost more than that: many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Measured break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself.
+- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost, and most of it is *session startup* (the built-in system-prompt cache), not per-task work: measured as **≈ $0.10 to start a session (S) + ≈ $0.03 per task (T)**. So a single delegation costs ≈ $0.11–0.18 (S+T) and only pays when doing the task yourself would cost more — many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Single-shot break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself. **But if you have several independent delegation-worthy tasks, batch them into one session** — delegate them back-to-back before you move on — so the startup cost S is shared: per-task cost then drops to ≈ $0.06–0.08 (measured $0.064 for three tasks in one session, −52% vs a single-shot delegation). A task that loses money delegated alone can turn a profit inside a batch.
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
 
@@ -33,7 +35,7 @@ EOF
 - Add `--check "<acceptance command>"` whenever the task has a commandable definition of done. LocalRig runs it after the agent finishes and feeds failures back to the model for up to `--check-retries` attempts (default 2).
 - `--json` prints a single JSON object on stdout: `session_id`, `status` (`ok` | `check_failed` | `max_iterations` | `loop_abort` | ...), `result`, `check`, `report`, `duration_ms`, `tokens`, and a ready-made `feedback_command`.
 - `report.changed_files` lists files changed through the write/edit tools, and `report.commands_run` lists bash commands the local agent ran. Bash-side file changes (`rm`, `mv`, generated files) are not tracked there, so still inspect the diff.
-- Use a Bash timeout of at least 900000 ms (a heavy run plus `--check` retries has been measured near 10 minutes). For a single task, just call `lh -p` synchronously and wait — submitting then immediately waiting only adds turns (measured +33% cost, same effective block). Use `lh submit -p - ... --json` → do **unrelated** work → `lh wait <session_id> --json` (or `lh poll <session_id> --json` to check without blocking) *only* when you genuinely have other work to advance meanwhile; 27B inference is effectively serial on one Ollama host anyway.
+- Use a Bash timeout of at least 900000 ms (a heavy run plus `--check` retries has been measured near 10 minutes). **Call `lh -p` synchronously — do not use `submit`/`wait` in a headless (`-p`) delegation flow.** It was measured not to shorten wall-clock: for a single task it just adds turns (+33% cost, same effective block), and even in the intended "delegate a big task A, do a small task B meanwhile" case, A dwarfs B, so you finish B and then block on `lh wait` for A's remainder anyway — no net saving (round 5, async-pair). `submit`/`wait`/`poll` earns its keep only in an interactive session where a human advances genuinely unrelated work while the local run proceeds; 27B inference is effectively serial on one Ollama host regardless.
 - Add `--auto` to make the local agent refuse dangerous bash commands instead of running them (recommended when delegating into repos with scripts you haven't read).
 - Exit code 0 means the agent believes it finished; non-zero means it stopped early — treat the work as incomplete.
 
@@ -69,4 +71,4 @@ lh -p "The first line must be exactly `FIXED:`. Fix only that." --resume <sessio
 
 ## Calibrate
 
-`lh stats --by-kind` shows pass rate and average duration by task kind. If the pass rate for a kind of task is poor, stop delegating that kind. `lh sessions` lists recent runs when you lost a session id.
+`lh stats --by-kind` shows pass rate and average duration by task kind (add `--json` for a machine-readable `rate` per kind — the same track record you consult before delegating, see "When to delegate"). Check it after runs too, to catch a kind whose reliability is slipping and stop delegating it. `lh sessions` lists recent runs when you lost a session id.

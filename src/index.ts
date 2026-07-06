@@ -246,9 +246,8 @@ function cmdStats(argv: string[]): number {
     console.log(JSON.stringify(stats));
     return 0;
   }
-  const rate = stats.graded > 0 ? Math.round((100 * stats.pass) / stats.graded) : 0;
   console.log(`sessions: ${stats.sessions}`);
-  console.log(`graded:   ${stats.graded} (pass ${stats.pass} / fail ${stats.fail}, ${rate}% pass)`);
+  console.log(`graded:   ${stats.graded} (pass ${stats.pass} / fail ${stats.fail}, ${stats.rate ?? 0}% pass)`);
   if (stats.recentFailures.length > 0) {
     console.log("recent failures:");
     for (const f of stats.recentFailures) {
@@ -258,9 +257,8 @@ function cmdStats(argv: string[]): number {
   if (byKind && stats.byKind) {
     console.log("by kind:");
     for (const k of stats.byKind) {
-      const rate = k.graded > 0 ? Math.round((100 * k.pass) / k.graded) : 0;
       console.log(
-        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${rate}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s`,
+        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${k.rate ?? 0}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s`,
       );
     }
   }

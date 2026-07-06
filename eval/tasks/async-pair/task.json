@@ -1,0 +1,13 @@
+{
+  "name": "async-pair",
+  "prompt": "このリポジトリには独立した2つの作業があります。両方を完了してください。\n\n【Part A: 価格ユーティリティの移行(機械的な一括置換)】\nsrc/lib/money.ts の旧API fmtMoney(cents, symbol) / discountCents(cents, pct) が非推奨になり、src/lib/pricing.ts の新API formatMoney({cents, symbol}) / discount({cents, pct}) に置き換えることになりました。src/ 以下で旧APIを使っている全ての箇所(caller は10ファイル)を新APIへ移行し、完了後に src/lib/money.ts を削除してください。挙動は変えないこと。引数の対応付けを間違えないよう注意: fmtMoney(cents, symbol) → formatMoney({ cents, symbol })、discountCents(cents, pct) → discount({ cents, pct })。src/lib/pricing.ts とテストファイル(test/ 以下)は変更禁止です。Part A の受け入れコマンドは bash test/verify-a.sh(bun test が全通過し、src/ に fmtMoney( / discountCents( の呼び出しと lib/money の import が残らず、10 caller が lib/pricing を参照し、src/lib/money.ts が削除され、src/lib/pricing.ts が未改変であること)。\n\n【Part B: アーキテクチャ設計メモ(NOTES-ARCH.md の新規作成)】\nリポジトリを読み、リポジトリ直下に NOTES-ARCH.md を新規作成してください。次の見出し(## 見出し)を記載どおり正確に(完全一致で)含め、各見出しの本文中で該当モジュールがエクスポートする関数名に必ず言及すること:\n- ## src/checkout — cartLine / receiptTotals / orderSummary に言及\n- ## src/catalog — productCard / priceTag / saleBadge に言及\n- ## src/reports — dailySales / refundLine に言及\n- ## src/notifications — orderEmail / priceAlert に言及\n- ## src/lib — 価格ユーティリティ formatMoney / discount に言及\n最後に ## リスクと改善案 という見出しを設け、箇条書き(行頭が - または *)を3項目以上書くこと。Part B は Part A の対象ファイルを読むだけで書けます(A の完了に依存しません)。\n\n全体の受け入れコマンド: bash test/verify.sh(Part A と Part B の両方を検査します)。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "Part A: 10 caller files migrated from src/lib/money.ts to src/lib/pricing.ts",
+    "Part A: src/lib/money.ts deleted; no fmtMoney(/discountCents( call sites or lib/money imports remain",
+    "Part A: src/lib/pricing.ts unchanged (sha256); bun test passes",
+    "Part B: NOTES-ARCH.md has ## src/checkout|catalog|reports|notifications|lib sections, each naming that module's exported functions",
+    "Part B: ## リスクと改善案 section with >= 3 bullet points",
+    "verify.sh = Part A AND Part B (partial solutions fail)"
+  ]
+}
