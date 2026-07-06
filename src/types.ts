@@ -123,6 +123,13 @@ export type RunStatus =
   | "empty"
   | "error";
 
+/**
+ * Coarse bucket for a caught run error, so an orchestrating agent can branch
+ * on cause (e.g. retry on "connection", give up on "ollama_error") without
+ * parsing the free-form `error` string. Only set when `error` is set.
+ */
+export type ErrorKind = "connection" | "ollama_error" | "config" | "internal";
+
 // ---------- Events the agent loop emits to the UI ----------
 
 export type AgentEvent =

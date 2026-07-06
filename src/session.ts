@@ -9,7 +9,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { RunStatus } from "./types.ts";
+import type { ChatMessage, ErrorKind, RunStatus } from "./types.ts";
 
 export interface SessionTokens {
   /** Prompt tokens of the final turn (context size at completion). */
@@ -27,12 +27,14 @@ export interface SessionRecord {
   status: RunStatus;
   result: string;
   error?: string;
+  /** Coarse cause bucket for `error`, e.g. for retry/triage logic. Unset when error is unset. */
+  errorKind?: ErrorKind;
   durationMs: number;
   turns: number;
   toolCalls: number;
   tokens: SessionTokens;
   /** Full message transcript for post-hoc debugging. */
-  messages?: unknown;
+  messages?: readonly ChatMessage[];
 }
 
 export interface FeedbackRecord {

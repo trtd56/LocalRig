@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { Agent } from "./agent.ts";
 import { defaultConfig, type Config } from "./config.ts";
 import { createRenderer, c } from "./ui/render.ts";
-import type { AgentEvent, RunStatus } from "./types.ts";
+import type { AgentEvent, ErrorKind, RunStatus } from "./types.ts";
 import {
   appendFeedback,
   computeStats,
@@ -206,6 +206,19 @@ function cmdStats(argv: string[]): number {
 
 // ---------- one-shot ----------
 
+/**
+ * Bucket a caught run error's message so a caller can branch on cause
+ * (e.g. retry after a connection failure) without parsing free text.
+ * Order matters: connection/ollama_error patterns are checked before the
+ * generic "internal" fallback. "config" has no current thrower — reserved
+ * for future validation errors (e.g. bad --model / config values).
+ */
+function classifyError(message: string): ErrorKind {
+  if (/fetch failed|ECONNREFUSED|ENOTFOUND|ETIMEDOUT/i.test(message)) return "connection";
+  if (message.startsWith("Ollama HTTP") || message.startsWith("Ollama error:")) return "ollama_error";
+  return "internal";
+}
+
 async function runOneShot(opts: CliOptions): Promise<never> {
   const { config } = opts;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
@@ -241,11 +254,13 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   let result = "";
   let status: RunStatus = "error";
   let error: string | undefined;
+  let errorKind: ErrorKind | undefined;
   try {
     result = await agent.run(opts.prompt!);
     status = agent.lastRunStatus;
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
+    errorKind = classifyError(error);
   }
   const durationMs = Date.now() - started;
 
@@ -258,6 +273,7 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     status,
     result,
     error,
+    errorKind,
     durationMs,
     turns,
     toolCalls,
@@ -272,6 +288,7 @@ async function runOneShot(opts: CliOptions): Promise<never> {
         status,
         result,
         error,
+        error_kind: errorKind,
         duration_ms: durationMs,
         turns,
         tool_calls: toolCalls,
