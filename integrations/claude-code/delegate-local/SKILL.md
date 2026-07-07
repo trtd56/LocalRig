@@ -13,7 +13,7 @@ description: Delegate small, mechanical, verifiable coding tasks to LocalRig via
 
 Delegate when ALL of these hold:
 - The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
-- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost, and most of it is *session startup* (the built-in system-prompt cache), not per-task work: measured as **≈ $0.10 to start a session (S) + ≈ $0.03 per task (T)**. So a single delegation costs ≈ $0.11–0.18 (S+T) and only pays when doing the task yourself would cost more — many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). Single-shot break-even is ≈ $0.15 of baseline cost; a task you'd finish in a handful of turns is cheaper to just do yourself. **But if you have several independent delegation-worthy tasks, batch them into one session** — delegate them back-to-back before you move on — so the startup cost S is shared: per-task cost then drops to ≈ $0.06–0.08 (measured $0.064 for three tasks in one session, −52% vs a single-shot delegation). A task that loses money delegated alone can turn a profit inside a batch.
+- **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost, and most of it is *session startup* (the built-in system-prompt cache), not per-task work: decomposed as **a session-startup cost S (independent of task count) + a per-task cost T** (measured S ≈ $0.10, T ≈ $0.03 under Claude Code 2.1.77 accounting — absolute dollars shift with CLI versions, the structure doesn't). A single delegation costs S+T and only pays when doing the task yourself would cost more — many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). A task you'd finish in a handful of turns is cheaper to just do yourself. **If you have several independent delegation-worthy tasks, do NOT issue one `lh -p` per task — bundle them into a single `lh batch` call** (see "Batch multiple tasks" below): S is shared and the orchestration turns collapse into one call. Measured same-day (2.1.202, warm cache): hand-rolling N sequential `lh -p` calls cost ≈ $0.60 and *lost* to the do-it-yourself baseline ($0.446), while one `lh batch` call cost ≈ $0.39–0.42 and stayed profitable (−6 to −13% vs baseline, ≈ −30% vs hand-rolled). A task that loses money delegated alone can turn a profit inside a batch.
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
 
@@ -40,6 +40,26 @@ EOF
 - Use a Bash timeout of at least 900000 ms (a heavy run plus `--check` retries has been measured near 10 minutes). **Call `lh -p` synchronously — do not use `submit`/`wait` in a headless (`-p`) delegation flow.** It was measured not to shorten wall-clock: for a single task it just adds turns (+33% cost, same effective block), and even in the intended "delegate a big task A, do a small task B meanwhile" case, A dwarfs B, so you finish B and then block on `lh wait` for A's remainder anyway — no net saving (round 5, async-pair). `submit`/`wait`/`poll` earns its keep only in an interactive session where a human advances genuinely unrelated work while the local run proceeds; 27B inference is effectively serial on one Ollama host regardless.
 - Add `--auto` to make the local agent refuse dangerous bash commands instead of running them (recommended when delegating into repos with scripts you haven't read).
 - Exit code 0 means the agent believes it finished; non-zero means it stopped early — treat the work as incomplete.
+
+## Batch multiple tasks — `lh batch`
+
+When you have two or more INDEPENDENT delegation-worthy tasks, bundle them into ONE call instead of issuing `lh -p` per task:
+
+```bash
+lh batch --tasks - --json --cwd /abs/path/to/project --max-time 1800 <<'EOF'
+{"tasks":[
+  {"id":"docs-sync","kind":"docs","check":"cd docs && bun test","prompt":"Sync docs/README.md with docs/src/cli.ts. Do not touch src/ or test/."},
+  {"id":"typefix","kind":"types","check":"cd typefix && bunx tsc --noEmit","prompt":"Fix the type errors in typefix/ without any/as/ts-ignore."}
+]}
+EOF
+```
+
+- Every task MUST carry a unique `id`, a `kind`, and a machine-verifiable `check` scoped to that task alone. Keep each `prompt` a short ticket (target file paths, expected behavior, the command that must pass) — do not paste file contents or spell out the fix; the local agent explores and the `check` is the gate.
+- Each task runs with a fresh context and its own check+repair loop; a failing task does not stop the remaining independent tasks. After all tasks finish, every passed check is re-run once (re-verification sweep) to catch a later task's bash side effects rolling back an earlier task's work.
+- `--max-time` is the TOTAL wall-clock budget for the whole batch (tasks that don't start in time report `not_run`). Use a Bash timeout that covers the whole batch (≥ 2100000 ms for ~3 tasks; the local model takes 1–20 min per task, run serially).
+- The JSON reply has a per-task `tasks[]` array (each with `status`, `check.exit_code`, `report.changed_files`). Verify and record feedback per task: `lh feedback <session_id> --task <id> pass|fail --notes "..."` (omitting `--task` fans the verdict out to every task).
+- Progress persists incrementally: if your session dies mid-batch or right after it, completed tasks' work and check results survive — read the session JSON (`lh sessions`, `lh poll <id> --json`) and record feedback afterwards instead of redoing the work.
+- Do not hand-assemble one mega-prompt telling a single local agent to do everything, and do not call `lh -p` once per subtask — measured same-day, the hand-rolled sequential pattern cost ≈ 1.4× the batch call and lost to just doing the tasks yourself.
 
 ## Verify — never trust the result blindly
 
