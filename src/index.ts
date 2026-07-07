@@ -17,7 +17,7 @@ import {
   type TaskExecution,
 } from "./batch.ts";
 import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
-import { defaultConfig, type Config } from "./config.ts";
+import { applyProfile, defaultConfig, PROFILE_FIELD_ENV, type Config, type ProfileField } from "./config.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
 import { createRenderer, c } from "./ui/render.ts";
 import type { AgentEvent, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
@@ -138,6 +138,12 @@ export function parseArgs(argv: string[]): CliOptions {
     maxTimeSet: false,
     checkRetries: 2,
   };
+  // Fields already pinned by an env var baked into defaultConfig at load time.
+  // --model must not clobber these when it re-resolves a profile for the new
+  // model; a CLI flag below adds to this set as it's parsed.
+  const explicitProfileFields = new Set<ProfileField>(
+    (Object.keys(PROFILE_FIELD_ENV) as ProfileField[]).filter((f) => process.env[PROFILE_FIELD_ENV[f]] !== undefined),
+  );
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     switch (a) {
@@ -147,6 +153,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--model":
         config.model = argv[++i]!;
+        applyProfile(config, config.model, explicitProfileFields);
         break;
       case "--num-ctx":
         config.numCtx = Number(argv[++i]);
@@ -156,9 +163,11 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--temperature":
         config.temperature = Number(argv[++i]);
+        explicitProfileFields.add("temperature");
         break;
       case "--presence-penalty":
         config.presencePenalty = Number(argv[++i]);
+        explicitProfileFields.add("presencePenalty");
         break;
       case "--max-iterations":
         config.maxIterations = Number(argv[++i]);
@@ -169,6 +178,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--think-budget":
         config.thinkBudgetChars = Number(argv[++i]);
+        explicitProfileFields.add("thinkBudgetChars");
         break;
       case "--headroom":
         config.headroomTokens = Number(argv[++i]);

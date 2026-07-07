@@ -24,6 +24,21 @@ bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 - 判定 = 「verify コマンドが exit 0」かつ「テストファイル非改ざん」の両方
 - タスクごとの制限時間30分(ハーネスには `--max-time 1500` が渡り、SIGKILL 前に自力で切り上げる)。verify は120秒制限
 - 所要時間の目安: claude 全21タスクで約20分、harness で約110分(mass-migration 追加前の20タスク構成での実測値。21タスク一括だと mass-migration のローカル実行 ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない)
+- summary の各エントリには `model` フィールドが記録される。harness アームは `LH_MODEL`(未設定なら `defaultConfig.model`)、claude 系アームはオーケストレータに渡している `--model` の値(現状 `sonnet` 固定)
+
+## モデル更新時の回帰手順
+
+ローカルモデル(現行 `qwen36-27b-mtp:latest`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。
+
+1. `LH_MODEL` を新モデル名にして全タスクを harness アームで実行する(`eval/results/summary-harness.json` が上書き更新される):
+   ```sh
+   LH_MODEL=<新モデル名> bun run eval/run.ts --agent harness
+   ```
+2. `eval/compare-baseline.ts` で旧 baseline と diff を取る(タスク別の pass/fail・所要時間・promptTokens/completionTokens の差分を Markdown 表で標準出力):
+   ```sh
+   bun run eval/compare-baseline.ts --baseline eval/baselines/qwen36-27b-mtp.json --summary eval/results/summary-harness.json
+   ```
+3. 退行がなければ、新モデルの summary を `eval/baselines/<新モデル名>.json` として保存しコミットする(フォーマットは `eval/baselines/qwen36-27b-mtp.json` を参照: `{"model", "capturedAt", "note", "results"}` のラッパで、`results` は summary の配列をそのまま格納する)
 
 ## claude-delegate アーム(委譲による節約の計測)
 

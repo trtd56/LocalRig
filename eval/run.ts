@@ -15,6 +15,7 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { defaultConfig } from "../src/config.ts";
 import type { FeedbackRecord, SessionRecord } from "../src/session.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
@@ -80,11 +81,11 @@ Never modify test files. The ONLY tool calls allowed before your first \`lh\` ca
  */
 export const BATCHCLI_NUDGE = `This run is a delegation measurement: you MUST route ALL implementation AND investigation work through the local \`lh\` CLI. Doing the work yourself invalidates the run. This includes writing tests, fixing type errors, editing docs, and reproducing/investigating reported bugs — even if the task looks trivial or faster to do directly, delegate it anyway.
 1. Decompose the task into its INDEPENDENT subtasks and delegate them ALL IN ONE \`lh batch\` call via Bash with a stdin heredoc: lh batch --tasks - --json --cwd <absolute cwd> --max-time 1800
-   The heredoc body is a JSON manifest: {"tasks":[{"id":"<slug>","kind":"<rename|tests|docs|types|perf|bugfix|other>","check":"<exact acceptance command for THIS subtask only>","prompt":"<work order>"}, …]}. Every subtask MUST carry an \`id\`, a \`kind\`, and a machine-verifiable \`check\` command scoped to that subtask alone. Write each \`prompt\` like a ticket for a junior engineer: exact file paths, expected behavior, and the command that must pass when done; for investigation/triage subtasks, tell the local agent to write its findings to the file the task asks for. Do NOT call \`lh -p\` once per subtask, and do NOT hand-assemble one mega-prompt that tells a single local agent to do everything — bundling the independent subtasks into one \`lh batch\` call is the entire point of this arm. Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-20 minutes per subtask and the batch runs them serially); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment.
+   The heredoc body is a JSON manifest: {"tasks":[{"id":"<slug>","kind":"<rename|tests|docs|types|perf|bugfix|other>","check":"<exact acceptance command for THIS subtask only>","prompt":"<work order>"}, …]}. Every subtask MUST carry an \`id\`, a \`kind\`, and a machine-verifiable \`check\` command scoped to that subtask alone — prefer reusing an existing project command (e.g. \`bun test\`, a \`grep\`) over inventing a new one. Keep each \`prompt\` a SHORT ticket, 10 lines or fewer: just the target file path(s), the expected behavior, and the command that must pass when done — nothing more. Do NOT paste file contents into the prompt and do NOT spell out the solution or write fix code; the local agent reads the files and works out the solution itself, and the \`check\` command is the gate, so thin instructions are enough. For investigation/triage subtasks, tell the local agent to write its findings to the file the task asks for. Do NOT call \`lh -p\` once per subtask, and do NOT hand-assemble one mega-prompt that tells a single local agent to do everything — bundling the independent subtasks into one \`lh batch\` call is the entire point of this arm. Run it in the FOREGROUND with a Bash timeout of 2100000 ms (the local model takes 1-20 minutes per subtask and the batch runs them serially); do NOT use background execution — backgrounded nested agent processes silently fail to start in this environment.
 2. When it returns, parse the JSON (session_id, status, tasks[]). For each entry in tasks[], read its \`status\` and \`check.exit_code\`. If a subtask's check.exit_code===0, do not rerun that acceptance command unless it is flaky or security-sensitive; inspect that subtask's \`changed_files\` plus git diff for unexpected changes.
 3. Verify each subtask cheaply (its \`changed_files\` / git diff / read touched files). If a subtask's \`status\` is not ok or its \`check\` failed, re-run that acceptance command yourself to confirm. Only if a delegated subtask is broken or incomplete may you fix the remaining issues yourself with minimal edits, or re-delegate just that subtask. Do not delegate the same subtask more than twice.
 4. Record a verdict FOR EACH subtask, keyed by its id: lh feedback <session_id> --task <id> pass|fail --source claude-code --notes "<short reason>".
-Never modify test files. The ONLY tool calls allowed before your first \`lh\` call are cheap reads needed to write the work order (listing files or reading one or two). Do not edit any file before at least one \`lh\` attempt has returned.`;
+Never modify test files. Before your first \`lh batch\` call you may list files and read AT MOST two of them; reading every file in full is prohibited — the local agent explores the codebase itself, so pointing it at the paths and requirements is enough and you do not need to understand each subtask's solution first. Do not edit any file before at least one \`lh\` attempt has returned.`;
 
 /**
  * System-prompt append for the `claude-delegate-async` arm. Same delegation-first
@@ -173,6 +174,14 @@ export const ASYNC_PAIR_NUDGE = `This run measures paired ASYNCHRONOUS delegatio
 5. Record the verdict: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>". Do not delegate the same task more than twice.
 Never modify test files. Before your first \`lh\` call, the only tool calls allowed are cheap reads needed to write the Part A work order; do not edit any Part A file before you have reaped the delegated result. Part B (reading the repo and writing its document) is yours to do during the wait — that exemption does not extend to Part A.`;
 
+/**
+ * Model the orchestrator runs as for every `claude`-family arm (the `--model`
+ * value passed to the `claude` CLI). Kept as a single constant so agentCommand
+ * and the `model` field recorded on each TaskResult can't drift apart. Haiku
+ * workers are a separate, per-call model tracked in `workers[]`, not here.
+ */
+const CLAUDE_ORCHESTRATOR_MODEL = "sonnet";
+
 /** True for every delegate arm (`claude-delegate`, `claude-delegate-haiku`, …). */
 function isDelegateArm(agent: string): boolean {
   return agent.startsWith("claude-delegate");
@@ -236,6 +245,14 @@ interface WorkerMetric {
 interface TaskResult {
   task: string;
   agent: string;
+  /**
+   * Which model actually ran this task: `LH_MODEL`/defaultConfig.model for the
+   * harness arm, or the `--model` value passed to the `claude` CLI orchestrator
+   * for every `claude`-family arm (see CLAUDE_ORCHESTRATOR_MODEL). Lets a
+   * summary survive a model upgrade without silently mixing runs from two
+   * models under one file — see eval/baselines/ and compare-baseline.ts.
+   */
+  model: string;
   passed: boolean;
   verifyOutput: string;
   testFilesModified: string[];
@@ -460,7 +477,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     // directive is appended to the system prompt only. The task-facing prompt
     // (spec.prompt) is left byte-identical to the baseline so the arms stay
     // comparable — the arm's only difference is which worker it delegates to.
-    const args = ["-p", prompt, "--model", "sonnet", "--output-format", "json", "--dangerously-skip-permissions"];
+    const args = ["-p", prompt, "--model", CLAUDE_ORCHESTRATOR_MODEL, "--output-format", "json", "--dangerously-skip-permissions"];
     if (agent === "claude-delegate") args.push("--append-system-prompt", DELEGATE_NUDGE);
     else if (agent === "claude-delegate-batchcli") args.push("--append-system-prompt", BATCHCLI_NUDGE);
     else if (agent === "claude-delegate-async") args.push("--append-system-prompt", ASYNC_DELEGATE_NUDGE);
@@ -658,6 +675,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     env.BASH_DEFAULT_TIMEOUT_MS = "2100000";
   }
 
+  const model = agent === "harness" ? (process.env.LH_MODEL ?? defaultConfig.model) : CLAUDE_ORCHESTRATOR_MODEL;
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);
   const { cmd, args } = agentCommand(agent, spec.prompt);
   const timeoutMs = isDelegate ? DELEGATE_TASK_TIMEOUT_MS : TASK_TIMEOUT_MS;
@@ -700,6 +718,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
   return {
     task: spec.name,
     agent,
+    model,
     passed,
     verifyOutput: verify.output.slice(-2000),
     testFilesModified,

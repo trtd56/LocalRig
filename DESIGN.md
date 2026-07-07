@@ -93,3 +93,28 @@ eval/
 1. 単機能実装: 仕様からモジュール+テストを書く
 2. バグ修正: 既存コードのテスト失敗を直す
 3. マルチファイルリファクタ: 既存小規模プロジェクトの構造変更
+
+## モデル更新手順
+
+### 切り替えの入口
+- `LH_MODEL` 環境変数(または `--model` CLIフラグ)でモデル名を指定する。
+- サンプリング値(temperature/top_p/top_k/presence_penalty/thinkBudgetChars)は `src/config.ts` の `MODEL_PROFILES`(モデル名の大文字小文字無視・部分一致、先勝ち)から `resolveProfile()` が自動解決する。優先順位は「CLIフラグ/環境変数(`LH_TEMPERATURE` 等)で明示指定 > `MODEL_PROFILES` のパターンマッチ > どのパターンにも一致しない場合は検証済みQwen値(`DEFAULT_PROFILE`)にフォールバック」——未検証のモデルを未検証の値ではなく既知の安全値に倒す設計。
+- 新モデル系統を採用する場合、`MODEL_PROFILES` に1エントリ(パターン文字列 + `ModelProfile` の5フィールド)を追加する。
+
+### 回帰確認
+手順は eval/README.md の「モデル更新時の回帰手順」節を参照。要旨: 新モデルで harness アーム全タスクを実行 → `eval/compare-baseline.ts` で `eval/baselines/qwen36-27b-mtp.json` と突き合わせ → 退行がなければ新モデルの baseline を保存・コミット。
+
+### 再計測チェックリスト
+以下は Qwen3.6 の実測で決めた値・挙動であり、モデル更新時に再計測・再確認する:
+- **presencePenalty**: Qwen のループ対策として実測で決定(`src/config.ts` のコメント参照)。
+- **thinkBudgetChars**: 文字ベースの thinking watchdog。thinking の冗長度はモデル依存。
+- **think パラメータの扱い**: `src/provider/ollama.ts` は `think` オプションを未指定なら送らずモデルのデフォルトに委ねる。新モデルが thinking 非対応、または別形式で thinking を返す可能性がある。
+- **loopWarnAfter / loopAbortAfter**: 反復傾向はモデル依存。
+- **システムプロンプト**: `src/prompt/system.ts` は ~27B 向けに短く命令調で書かれている。モデルの規模・性格に応じて調整の余地がある。
+- **ツールコール形式**: `src/toolcall/fallback.ts` は Qwen の `<tool_call>{...}</tool_call>` ブロック → fenced ```json ブロック → bare JSON という優先順位でテキストからツールコールを復元する。新モデルが生成するツールコール崩れの形式が異なる場合、eval ログから生出力を採取して `test/toolcall.test.ts` にフィクスチャを追加し、必要ならパーサ段を1つ足す。eval ログの「⚠ tool-call repair」出現率がモデル比較の指標になる。
+- **Ollama 側テンプレートの tool-call / thinking 対応確認**(`models/README.md` 参照)。
+- **委譲基準の再校正**: `integrations/claude-code/delegate-local/SKILL.md` のタスク選定基準・損益分岐コストも Qwen3.6 の実測に基づく校正値のため、モデル更新時は eval の delegate アーム(eval/README.md 参照)を回し直して再導出する。
+
+### 自動追従するので再計測不要
+- **トークン推定**: `src/context/tokens.ts` は `prompt_eval_count` への EMA 自己校正なので、モデルが変わっても自動的に追従する。
+- **prune/compact 閾値**: `src/config.ts` の `pruneAt`/`compactAt` は `numCtx` に対する比率で決まるため、モデル固有のコンテキスト長に自動的にスケールする。

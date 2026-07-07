@@ -21,6 +21,8 @@ Do NOT delegate: multi-file design work, anything requiring project-wide context
 
 **Before delegating a mechanical sweep, ask whether a script beats it.** If the rule is codifiable and the correct values are machine-extractable (from comments, a manifest, config), you can usually fold the whole sweep with one script you write yourself, far below the cost floor — a 40-file / 46-site change stayed at $0.23 baseline that way. "More files" does not mean "more expensive" or "bigger delegation win": realistic delegation savings top out around −30 to −50%, not −80%. Delegate the sweep only when the per-file edits need judgement a script can't capture.
 
+**These numbers are model-specific.** The cost-floor figures above and the task-selection criteria were calibrated against LocalRig running Qwen 3.6 27B's measured quality and speed. After swapping the local model, rerun the eval delegate arm (see `eval/README.md`) and re-derive the break-even and criteria before trusting them.
+
 ## How to call
 
 ```bash
