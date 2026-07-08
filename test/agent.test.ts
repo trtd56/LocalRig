@@ -86,6 +86,41 @@ describe("Agent.restore", () => {
   });
 });
 
+describe("Agent.runTextOnly", () => {
+  test("runs one turn without tools or a max-iteration wrap-up prompt", async () => {
+    const originalFetch = globalThis.fetch;
+    let requestBody: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      const line = JSON.stringify({
+        message: { role: "assistant", content: '{"answer":"fixed"}' },
+        done: true,
+        prompt_eval_count: 10,
+        eval_count: 3,
+      });
+      return new Response(line + "\n", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const tool: ToolDef = {
+        name: "read",
+        description: "test",
+        parameters: { type: "object", properties: {}, required: [] },
+        mutating: false,
+        execute: async () => ({ ok: true, output: "unused" }),
+      };
+      const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SYS", [tool], true);
+      expect(await agent.runTextOnly("repair as JSON")).toBe('{"answer":"fixed"}');
+      expect(requestBody?.tools).toEqual([]);
+      const messages = requestBody?.messages as Array<{ content: string }>;
+      expect(messages.at(-1)?.content).toBe("repair as JSON");
+      expect(messages.some((m) => m.content.includes("CRITICAL - stopping now"))).toBe(false);
+      expect(agent.lastRunStatus).toBe("ok");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("buildScoutSystemPrompt", () => {
   test("describes read-only exploration and digest JSON requirements", () => {
     const prompt = buildScoutSystemPrompt(os.tmpdir(), { ...defaultConfig }, "where is retry?", ["src"]);

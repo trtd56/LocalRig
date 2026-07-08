@@ -268,6 +268,38 @@ export class Agent {
   }
 
   /**
+   * Run exactly one non-thinking, tool-free model turn. Used when a caller
+   * needs a final serialization repair without reopening the agent loop.
+   */
+  async runTextOnly(userInput: string): Promise<string> {
+    this.lastRunStatus = "error";
+    this.push({ role: "user", content: userInput });
+    await this.contextManager.manage(this.messages, this.onEvent, this.abort.signal);
+    const turn = await this.streamTurn(false, 0, []);
+    if (turn.kind === "user_abort") {
+      this.lastRunStatus = "interrupted";
+      return "[interrupted]";
+    }
+    if (turn.kind === "interrupted") {
+      this.lastRunStatus = "error";
+      return "[thinking interrupted]";
+    }
+
+    const response = turn.response;
+    this.onEvent({ type: "turn_end" });
+    this.push(response.message);
+    this.contextManager.recordUsage(this.messages, response.promptTokens, response.evalTokens);
+    this.onEvent({
+      type: "usage",
+      promptTokens: response.promptTokens,
+      evalTokens: response.evalTokens,
+      ctxPercent: Math.round((100 * (response.promptTokens + response.evalTokens)) / this.config.numCtx),
+    });
+    this.lastRunStatus = response.message.content.trim() ? "ok" : "empty";
+    return response.message.content || "[the model produced no output]";
+  }
+
+  /**
    * Stream one model turn under the thinking watchdog. The watchdog gets its
    * own AbortController; a user Ctrl+C (userSignal) is forwarded to it so both
    * cancel the in-flight request, but we then read userSignal to tell a user
@@ -278,6 +310,7 @@ export class Agent {
   private async streamTurn(
     think: boolean | undefined,
     interruptionsSoFar: number,
+    tools: ToolDef[] = this.tools,
   ): Promise<
     | { kind: "response"; response: ChatResponse }
     | { kind: "interrupted" }
@@ -294,7 +327,7 @@ export class Agent {
     try {
       const response = await this.client.chat(
         this.messages,
-        this.tools,
+        tools,
         {
           num_ctx: this.config.numCtx,
           num_predict: this.config.numPredict,

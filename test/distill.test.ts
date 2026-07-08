@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  DistillConfigError,
   distill,
   mergeDigests,
   parseDigest,
@@ -40,6 +41,27 @@ describe("planChunks", () => {
     expect(chunks[0]!.sources[0]!.startLine).toBe(1);
     expect(chunks.at(-1)!.sources[0]!.endLine).toBe(4);
   });
+
+  test("truncates an oversized single line without emitting an oversized chunk", () => {
+    const chunks = planChunks([{ file: "huge.log", text: "x".repeat(1_000) }], 80, (text) => text.length);
+    expect(chunks).toHaveLength(1);
+    expect(chunks[0]!.estimatedTokens).toBeLessThanOrEqual(80);
+    expect(chunks[0]!.sources[0]!.startLine).toBe(1);
+    expect((chunks[0]!.omitted ?? []).join("\n")).toContain("single line exceeded");
+  });
+
+  test("plans a large split log with a bounded number of estimator calls", () => {
+    let calls = 0;
+    const text = Array.from({ length: 40_000 }, (_, i) => `line ${i}`).join("\n");
+    const budget = Math.floor(text.length / 2);
+    const chunks = planChunks([{ file: "large.log", text }], budget, (value) => {
+      calls++;
+      return value.length;
+    });
+    expect(chunks.length).toBeGreaterThan(1);
+    expect(chunks.every((chunk) => chunk.estimatedTokens <= budget)).toBe(true);
+    expect(calls).toBeLessThan(200);
+  });
 });
 
 describe("parseDigest", () => {
@@ -55,6 +77,13 @@ describe("parseDigest", () => {
     const parsed = parseDigest('{"answer":"x","not_found":"no","citations":[],"omitted":[]}');
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toContain("not_found");
+  });
+
+  test("ignores model-supplied citations_dropped", () => {
+    const parsed = parseDigest(
+      '{"answer":"x","not_found":false,"citations":[],"omitted":[],"citations_dropped":999}',
+    );
+    expect(parsed.digest!.citations_dropped).toBe(0);
   });
 });
 
@@ -185,6 +214,32 @@ describe("distill orchestration", () => {
     expect(result.digest.omitted.join("\n")).toContain("without any verified citations");
   });
 
+  test("carries oversized single-line truncation into the final digest", async () => {
+    const result = await distill(
+      {
+        query: "where is the needle?",
+        inputs: [{ file: "huge.log", text: `needle ${"x".repeat(1_000)}` }],
+        numCtx: 1_000,
+        budget: 50,
+      },
+      {
+        estimator: (text) => text.length,
+        complete: async (messages) => {
+          expect(messages.reduce((sum, message) => sum + message.content.length, 0) + 50).toBeLessThanOrEqual(1_000);
+          return {
+            text: digest({
+              answer: "Needle found.",
+              citations: [{ file: "huge.log", start_line: 1, end_line: 1, quote: "needle" }],
+            }),
+          };
+        },
+      },
+    );
+    expect(result.chunks[0]!.estimatedTokens).toBeLessThanOrEqual(1_000);
+    expect(result.digest.citations[0]!.quote).toBe("needle");
+    expect(result.digest.omitted.join("\n")).toContain("single line exceeded");
+  });
+
   test("retries once after malformed JSON", async () => {
     let calls = 0;
     const result = await distill(
@@ -213,7 +268,7 @@ describe("distill orchestration", () => {
     );
     expect(calls).toBe(2);
     expect(result.digest.citations).toHaveLength(1);
-    expect(result.promptTokens).toBe(20);
+    expect(result.promptTokens).toBe(30);
     expect(result.evalTokens).toBe(3);
   });
 
@@ -226,7 +281,7 @@ describe("distill orchestration", () => {
           { file: "a.txt", text: `needle-a ${"a".repeat(250)}` },
           { file: "b.txt", text: `needle-b ${"b".repeat(250)}` },
         ],
-        numCtx: 300,
+        numCtx: 900,
         budget: 50,
       },
       {
@@ -256,6 +311,102 @@ describe("distill orchestration", () => {
     expect(calls).toBe(3);
     expect(result.digest.citations.map((c) => c.quote).sort()).toEqual(["needle-a", "needle-b"]);
     expect(result.digest.omitted.join("\n")).not.toContain("without any verified citations");
+  });
+
+  test("truncates only partial answers before reduce and preserves citations", async () => {
+    const seenPrompts: string[] = [];
+    let calls = 0;
+    const result = await distill(
+      {
+        query: "needles?",
+        inputs: [
+          { file: "a.txt", text: `needle-a\n${"a".repeat(280)}` },
+          { file: "b.txt", text: `needle-b\n${"b".repeat(280)}` },
+        ],
+        numCtx: 1_100,
+        budget: 50,
+      },
+      {
+        estimator: (text) => text.length,
+        complete: async (messages) => {
+          calls++;
+          seenPrompts.push(messages.map((m) => m.content).join("\n"));
+          if (calls === 1) {
+            return {
+              text: digest({
+                answer: "A".repeat(500),
+                citations: [{ file: "a.txt", start_line: 1, end_line: 1, quote: "needle-a" }],
+              }),
+              promptTokens: 10,
+            };
+          }
+          if (calls === 2) {
+            return {
+              text: digest({
+                answer: "B".repeat(500),
+                citations: [{ file: "b.txt", start_line: 1, end_line: 1, quote: "needle-b" }],
+              }),
+              promptTokens: 10,
+            };
+          }
+          return { text: digest({ answer: "combined" }), promptTokens: 10 };
+        },
+      },
+    );
+    expect(calls).toBe(3);
+    // join() adds one display-only separator between the two messages.
+    expect(seenPrompts[2]!.length - 1 + 50).toBeLessThanOrEqual(1_100);
+    expect(seenPrompts[2]).toContain("partial answers were truncated");
+    expect(seenPrompts[2]).toContain("needle-a");
+    expect(seenPrompts[2]).toContain("needle-b");
+    expect(result.digest.citations.map((c) => c.quote).sort()).toEqual(["needle-a", "needle-b"]);
+    expect(result.digest.omitted.join("\n")).toContain("partial answers were truncated");
+    expect(result.promptTokens).toBe(30);
+  });
+
+  test("rejects num_ctx when reduce citations cannot fit", async () => {
+    let calls = 0;
+    await expect(
+      distill(
+        {
+          query: "needles?",
+          inputs: [
+            { file: "a.txt", text: `needle-a ${"a".repeat(140)}` },
+            { file: "b.txt", text: `needle-b ${"b".repeat(140)}` },
+          ],
+          numCtx: 650,
+          budget: 50,
+        },
+        {
+          estimator: (text) => text.length,
+          complete: async () => {
+            calls++;
+            const file = calls === 1 ? "a.txt" : "b.txt";
+            const quote = calls === 1 ? "needle-a" : "needle-b";
+            return {
+              text: digest({
+                answer: "x".repeat(300),
+                citations: Array.from({ length: 8 }, (_, i) => ({
+                  file,
+                  start_line: 1,
+                  end_line: 1,
+                  quote: `${quote} ${"q".repeat(i)}`,
+                })),
+              }),
+            };
+          },
+        },
+      ),
+    ).rejects.toBeInstanceOf(DistillConfigError);
+  });
+
+  test("rejects a response budget that leaves no room for a map chunk", async () => {
+    await expect(
+      distill(
+        { query: "x", inputs: [{ file: "a", text: "x" }], numCtx: 300, budget: 250 },
+        { estimator: (text) => text.length, complete: async () => ({ text: digest({}) }) },
+      ),
+    ).rejects.toBeInstanceOf(DistillConfigError);
   });
 });
 

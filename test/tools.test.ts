@@ -29,6 +29,13 @@ function makeTools(cwd: string, overrides: Partial<Config> = {}): { tools: Map<s
   return { tools, ctx };
 }
 
+function makeScoutTools(cwd: string, overrides: Partial<Config> = {}): { tools: Map<string, ToolDef>; ctx: ToolContext } {
+  const config: Config = { ...defaultConfig, ...overrides };
+  const ctx = makeCtx(cwd);
+  const tools = new Map(createScoutTools(config, ctx).map((t) => [t.name, t]));
+  return { tools, ctx };
+}
+
 function subdir(name: string): string {
   const d = path.join(tmp, name);
   fs.mkdirSync(d, { recursive: true });
@@ -105,6 +112,29 @@ describe("glob tool", () => {
     const res = await tools.get("glob")!.execute({ pattern: "**/*.zig" }, ctx);
     expect(res.ok).toBe(true);
     expect(res.output).toBe("no files match");
+  });
+
+  test("allows absolute paths within cwd", async () => {
+    const dir = subdir("globtool-absolute-inside");
+    fs.writeFileSync(path.join(dir, "inside.ts"), "x");
+    const { tools, ctx } = makeScoutTools(dir);
+    const res = await tools.get("glob")!.execute({ pattern: "*.ts", path: dir }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("inside.ts");
+  });
+
+  test("rejects relative, absolute, and symlink escapes from cwd", async () => {
+    const dir = subdir("globtool-boundary");
+    const outside = subdir("globtool-boundary-outside");
+    fs.writeFileSync(path.join(outside, "secret.ts"), "secret");
+    fs.symlinkSync(outside, path.join(dir, "outside-link"));
+    const { tools, ctx } = makeScoutTools(dir);
+    for (const escapedPath of ["../globtool-boundary-outside", outside, "outside-link"]) {
+      const res = await tools.get("glob")!.execute({ pattern: "**/*", path: escapedPath }, ctx);
+      expect(res.ok).toBe(false);
+      expect(res.output).toContain("outside the working directory");
+      expect(res.output).not.toContain("secret.ts");
+    }
   });
 });
 
@@ -184,6 +214,30 @@ describe("read tool", () => {
     const res = await tools.get("read")!.execute({ path: "bin.dat" }, ctx);
     expect(res.ok).toBe(false);
     expect(res.output).toContain("binary");
+  });
+
+  test("allows absolute paths within cwd", async () => {
+    const dir = subdir("read-absolute-inside");
+    const file = path.join(dir, "inside.txt");
+    fs.writeFileSync(file, "inside\n");
+    const { tools, ctx } = makeScoutTools(dir);
+    const res = await tools.get("read")!.execute({ path: file }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("inside");
+  });
+
+  test("rejects relative, absolute, and symlink escapes from cwd", async () => {
+    const dir = subdir("read-boundary");
+    const outside = path.join(tmp, "read-boundary-secret.txt");
+    fs.writeFileSync(outside, "secret\n");
+    fs.symlinkSync(outside, path.join(dir, "secret-link.txt"));
+    const { tools, ctx } = makeScoutTools(dir);
+    for (const escapedPath of ["../read-boundary-secret.txt", outside, "secret-link.txt"]) {
+      const res = await tools.get("read")!.execute({ path: escapedPath }, ctx);
+      expect(res.ok).toBe(false);
+      expect(res.output).toContain("outside the working directory");
+      expect(res.output).not.toContain("secret\n");
+    }
   });
 });
 
@@ -605,6 +659,29 @@ describe("grep tool", () => {
     expect(res.ok).toBe(false);
     expect(res.output).toContain("Invalid regex");
   });
+
+  test("allows absolute paths within cwd", async () => {
+    const dir = subdir("grep-absolute-inside");
+    fs.writeFileSync(path.join(dir, "inside.txt"), "needle\n");
+    const { tools, ctx } = makeScoutTools(dir);
+    const res = await tools.get("grep")!.execute({ pattern: "needle", path: dir }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("inside.txt:1: needle");
+  });
+
+  test("rejects relative, absolute, and symlink escapes from cwd", async () => {
+    const dir = subdir("grep-boundary");
+    const outside = subdir("grep-boundary-outside");
+    fs.writeFileSync(path.join(outside, "secret.txt"), "needle secret\n");
+    fs.symlinkSync(outside, path.join(dir, "outside-link"));
+    const { tools, ctx } = makeScoutTools(dir);
+    for (const escapedPath of ["../grep-boundary-outside", outside, "outside-link"]) {
+      const res = await tools.get("grep")!.execute({ pattern: "needle", path: escapedPath }, ctx);
+      expect(res.ok).toBe(false);
+      expect(res.output).toContain("outside the working directory");
+      expect(res.output).not.toContain("needle secret");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -676,6 +753,16 @@ describe("createTools", () => {
       expect(t.parameters.type).toBe("object");
       expect(Array.isArray(t.parameters.required)).toBe(true);
     }
+  });
+
+  test("keeps the normal coding-agent read scope unchanged", async () => {
+    const dir = subdir("registry-normal-scope");
+    const outside = path.join(tmp, "registry-normal-scope.txt");
+    fs.writeFileSync(outside, "outside context\n");
+    const { tools, ctx } = makeTools(dir);
+    const res = await tools.get("read")!.execute({ path: outside }, ctx);
+    expect(res.ok).toBe(true);
+    expect(res.output).toContain("outside context");
   });
 });
 

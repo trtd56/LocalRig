@@ -57,6 +57,13 @@ describe("cmdScout", () => {
           onEvent({ type: "turn_end" });
           return responses[Math.min(calls++, responses.length - 1)]!;
         },
+        async runTextOnly(input: string) {
+          seen?.prompts.push(input);
+          messages.push({ role: "user", content: input });
+          onEvent({ type: "usage", promptTokens: 100 + calls, evalTokens: 10, ctxPercent: 1 });
+          onEvent({ type: "turn_end" });
+          return responses[Math.min(calls++, responses.length - 1)]!;
+        },
       };
     };
   }
@@ -112,6 +119,77 @@ describe("cmdScout", () => {
     expect(seen.prompts[1]).toContain("required digest JSON schema");
     expect(JSON.parse(loadSession("repair-sid")!.result).parse_failed).toBeUndefined();
     expect(JSON.parse(loadSession("repair-sid")!.result).turns).toBe(2);
+  });
+
+  test("uses one dedicated text-only turn for JSON repair", async () => {
+    const methods: string[] = [];
+    let clock = 1_000;
+    const rc = await cmdScout([
+      "-q", "needle?",
+      "--cwd", cwd,
+      "--json",
+      "--quiet",
+      "--session-id", "repair-limits-sid",
+      "--max-iterations", "7",
+      "--max-time", "3",
+    ], {
+      now: () => clock,
+      createAgent: (_systemPrompt, onEvent, _think, config) => {
+        let calls = 0;
+        const agent: ScoutAgent = {
+          lastRunStatus: "ok" as RunStatus,
+          interrupt() {},
+          getMessages: () => [],
+          getReport: () => ({ changedFiles: [], commandsRun: [] }),
+          async run() {
+            methods.push(`run:${config.maxIterations}:${config.maxTimeMs}`);
+            onEvent({ type: "turn_end" });
+            calls++;
+            clock += 2_500;
+            return "not json";
+          },
+          async runTextOnly() {
+            methods.push("text-only");
+            onEvent({ type: "turn_end" });
+            agent.lastRunStatus = "ok";
+            return JSON.stringify({ answer: "not found", not_found: true, citations: [], omitted: [] });
+          },
+        };
+        return agent;
+      },
+    });
+    expect(rc).toBe(0);
+    expect(methods).toEqual(["run:7:3000", "text-only"]);
+    expect(loadSession("repair-limits-sid")!.status).toBe("ok");
+  });
+
+  test("does not start JSON repair after the total time budget is exhausted", async () => {
+    let clock = 1_000;
+    let runs = 0;
+    const rc = await cmdScout([
+      "-q", "needle?", "--cwd", cwd, "--json", "--quiet",
+      "--session-id", "repair-timeout-sid", "--max-time", "3",
+    ], {
+      now: () => clock,
+      createAgent: (_systemPrompt, onEvent) => ({
+        lastRunStatus: "ok" as RunStatus,
+        interrupt() {},
+        getMessages: () => [],
+        getReport: () => ({ changedFiles: [], commandsRun: [] }),
+        async run() {
+          runs++;
+          clock += 3_001;
+          onEvent({ type: "turn_end" });
+          return "not json";
+        },
+        async runTextOnly() {
+          throw new Error("repair must not start after the deadline");
+        },
+      }),
+    });
+    expect(rc).toBe(0);
+    expect(runs).toBe(1);
+    expect(JSON.parse(loadSession("repair-timeout-sid")!.result).parse_failed).toBe(true);
   });
 
   test("applies smaller scout defaults unless caller overrides them", async () => {
@@ -170,6 +248,39 @@ describe("cmdScout", () => {
     expect(digest.citations).toEqual([]);
     expect(digest.citations_dropped).toBe(1);
     expect(digest.omitted.join("\n")).toContain("without any verified citations");
+  });
+
+  test("rejects citations outside cwd through absolute, parent, and symlink paths", async () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "localrig-scout-outside-"));
+    try {
+      fs.writeFileSync(path.join(cwd, "inside.ts"), "const insideNeedle = true;\n");
+      const outsideFile = path.join(outside, "secret.ts");
+      fs.writeFileSync(outsideFile, "const secretNeedle = true;\n");
+      fs.symlinkSync(outsideFile, path.join(cwd, "linked.ts"));
+      const rc = await cmdScout(["-q", "needle?", "--cwd", cwd, "--json", "--quiet", "--session-id", "outside-citations-sid"], {
+        createAgent: fakeAgentFactory([
+          JSON.stringify({
+            answer: "Needles found.",
+            not_found: false,
+            citations: [
+              { file: "inside.ts", start_line: 1, end_line: 1, quote: "insideNeedle" },
+              { file: outsideFile, start_line: 1, end_line: 1, quote: "secretNeedle" },
+              { file: path.relative(cwd, outsideFile), start_line: 1, end_line: 1, quote: "secretNeedle" },
+              { file: "linked.ts", start_line: 1, end_line: 1, quote: "secretNeedle" },
+            ],
+            omitted: [],
+          }),
+        ]),
+      });
+      expect(rc).toBe(0);
+      const digest = JSON.parse(loadSession("outside-citations-sid")!.result);
+      expect(digest.citations).toEqual([
+        { file: "inside.ts", start_line: 1, end_line: 1, quote: "insideNeedle" },
+      ]);
+      expect(digest.citations_dropped).toBe(3);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   test("rejects unsupported scout invocations before saving a session", async () => {

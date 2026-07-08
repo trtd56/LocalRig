@@ -1096,6 +1096,7 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
 export interface ScoutAgent {
   lastRunStatus: RunStatus;
   run(input: string): Promise<string>;
+  runTextOnly(input: string): Promise<string>;
   interrupt(): void;
   getMessages(): readonly ChatMessage[];
   getReport(): RunReport;
@@ -1138,8 +1139,14 @@ function scoutForJson(record: SessionRecord) {
 }
 
 function readCitationFile(cwd: string, file: string, readFile: (file: string) => string): string {
+  const root = fs.realpathSync(cwd);
   const target = path.isAbsolute(file) ? file : path.resolve(cwd, file);
-  return readFile(target);
+  const realTarget = fs.realpathSync(target);
+  const relative = path.relative(root, realTarget);
+  if (relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`citation path is outside cwd: ${file}`);
+  }
+  return readFile(realTarget);
 }
 
 function evidenceCheckedScoutDigest(
@@ -1190,7 +1197,8 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
   if (!opts.maxTimeSet) config.maxTimeMs = 900_000;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
-  const started = deps.now?.() ?? Date.now();
+  const now = deps.now ?? Date.now;
+  const started = now();
   const showProgress = json ? opts.verbose : !opts.quiet;
   const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
   let turns = 0;
@@ -1235,12 +1243,27 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     status = agent.lastRunStatus;
     let parsed = parseDigest(text);
     if (!parsed.ok && status === "ok") {
-      text = await agent.run(
-        `The previous response did not match the required digest JSON schema: ${parsed.error}. ` +
-          "Return only valid JSON with answer, not_found, citations, omitted, and citations_dropped. No markdown.",
-      );
-      status = agent.lastRunStatus;
-      parsed = parseDigest(text);
+      const originalMaxTimeMs = config.maxTimeMs;
+      const elapsedMs = now() - started;
+      const remainingMs = originalMaxTimeMs > 0 ? originalMaxTimeMs - elapsedMs : 0;
+      if (originalMaxTimeMs === 0 || remainingMs > 0) {
+        // Repair is a final formatting pass, not another scout loop. The
+        // dedicated method exposes no tools and does not add Agent.run's
+        // max-iteration wrap-up prompt.
+        const repairTimer = originalMaxTimeMs > 0
+          ? setTimeout(() => agent.interrupt(), Math.max(1, remainingMs))
+          : undefined;
+        try {
+          text = await agent.runTextOnly(
+            `The previous response did not match the required digest JSON schema: ${parsed.error}. ` +
+              "Do not call tools. Return only valid JSON with answer, not_found, citations, omitted, and citations_dropped. No markdown.",
+          );
+          status = agent.lastRunStatus;
+          parsed = parseDigest(text);
+        } finally {
+          if (repairTimer !== undefined) clearTimeout(repairTimer);
+        }
+      }
     }
     const digest = parsed.ok && parsed.digest
       ? evidenceCheckedScoutDigest(parsed.digest, cwd, readFile, turns)
@@ -1254,7 +1277,7 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     if (deps.createAgent === undefined) process.off("SIGINT", onSigint);
   }
 
-  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const durationMs = now() - started;
   const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date(started).toISOString(),

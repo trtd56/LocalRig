@@ -17,6 +17,8 @@ export interface DistillChunk {
   sources: DistillSource[];
   text: string;
   estimatedTokens: number;
+  /** Harness-recorded input truncations for this chunk. */
+  omitted?: string[];
 }
 
 export interface Citation {
@@ -104,7 +106,6 @@ export const DIGEST_SCHEMA = {
       },
     },
     omitted: { type: "array", items: { type: "string" } },
-    citations_dropped: { type: "number" },
   },
   required: ["answer", "not_found", "citations", "omitted"],
 };
@@ -149,19 +150,35 @@ export function planChunks(
   if (tokenBudget < 50) throw new DistillConfigError("chunk token budget must be at least 50");
   const chunks: DistillChunk[] = [];
   let current: DistillSource[] = [];
+  let currentOmitted: string[] = [];
 
   const flush = () => {
     if (current.length === 0) return;
     const text = chunkText(current);
-    chunks.push({ index: chunks.length, sources: current, text, estimatedTokens: estimator(text) });
+    chunks.push({
+      index: chunks.length,
+      sources: current,
+      text,
+      estimatedTokens: estimator(text),
+      omitted: currentOmitted,
+    });
     current = [];
+    currentOmitted = [];
   };
 
-  const pushSource = (source: DistillSource) => {
+  const pushSource = (source: DistillSource, omitted: string[] = []) => {
     const candidate = [...current, source];
     if (current.length > 0 && estimator(chunkText(candidate)) > tokenBudget) flush();
     current.push(source);
+    currentOmitted.push(...omitted);
   };
+
+  const sourceFor = (file: string, lines: string[], start: number, end: number): DistillSource => ({
+    file,
+    startLine: start + 1,
+    endLine: Math.max(start + 1, end),
+    text: lines.slice(start, end).join("\n"),
+  });
 
   for (const input of inputs) {
     const lines = splitLines(input.text);
@@ -178,52 +195,73 @@ export function planChunks(
 
     flush();
     let start = 0;
-    while (start < lines.length || (lines.length === 0 && start === 0)) {
-      let end = Math.min(lines.length, start + 1);
-      let lastGoodEnd = end;
-      while (end <= lines.length) {
-        const partText = lines.slice(start, end).join("\n");
-        const source: DistillSource = {
-          file: input.file,
-          startLine: start + 1,
-          endLine: Math.max(start + 1, end),
-          text: partText,
-        };
-        if (estimator(sourceBlock(source)) > tokenBudget) break;
-        lastGoodEnd = end;
-        end++;
-      }
-      if (lastGoodEnd === start) {
+    while (start < lines.length) {
+      const oneLine = sourceFor(input.file, lines, start, start + 1);
+      if (estimator(sourceBlock(oneLine)) > tokenBudget) {
         const line = lines[start] ?? "";
-        const source: DistillSource = {
-          file: input.file,
-          startLine: start + 1,
-          endLine: start + 1,
-          text: line,
-        };
-        chunks.push({
-          index: chunks.length,
-          sources: [source],
-          text: sourceBlock(source),
-          estimatedTokens: estimator(sourceBlock(source)),
-        });
+        const emptyLineSource = { ...oneLine, text: "" };
+        if (estimator(sourceBlock(emptyLineSource)) > tokenBudget) {
+          throw new DistillConfigError(
+            `chunk budget cannot fit source header for ${input.file}:${start + 1}`,
+          );
+        }
+        let low = 0;
+        let high = line.length;
+        while (low < high) {
+          const mid = Math.ceil((low + high) / 2);
+          const candidate = { ...oneLine, text: line.slice(0, mid) };
+          if (estimator(sourceBlock(candidate)) <= tokenBudget) low = mid;
+          else high = mid - 1;
+        }
+        const source = { ...oneLine, text: line.slice(0, low) };
+        pushSource(source, [
+          `${input.file}:${start + 1} was truncated by the harness because the single line exceeded the chunk token budget`,
+        ]);
+        flush();
         start++;
-      } else {
-        const source: DistillSource = {
-          file: input.file,
-          startLine: start + 1,
-          endLine: Math.max(start + 1, lastGoodEnd),
-          text: lines.slice(start, lastGoodEnd).join("\n"),
-        };
-        chunks.push({
-          index: chunks.length,
-          sources: [source],
-          text: sourceBlock(source),
-          estimatedTokens: estimator(sourceBlock(source)),
-        });
-        start = lastGoodEnd;
+        continue;
       }
-      if (lines.length === 0) break;
+
+      // Exponential probing keeps the all-fit case linear in input size, while
+      // avoiding the old one-line-at-a-time reconstruction of the whole chunk.
+      let lastGoodEnd = start + 1;
+      let firstBadEnd: number | undefined;
+      let step = 2;
+      while (lastGoodEnd < lines.length) {
+        const end = Math.min(lines.length, start + step);
+        const candidate = sourceFor(input.file, lines, start, end);
+        if (estimator(sourceBlock(candidate)) <= tokenBudget) {
+          lastGoodEnd = end;
+          if (end === lines.length) break;
+          step *= 2;
+        } else {
+          firstBadEnd = end;
+          break;
+        }
+      }
+      if (firstBadEnd !== undefined && firstBadEnd > lastGoodEnd + 1) {
+        let low = lastGoodEnd + 1;
+        let high = firstBadEnd - 1;
+        while (low <= high) {
+          const mid = Math.floor((low + high) / 2);
+          const candidate = sourceFor(input.file, lines, start, mid);
+          if (estimator(sourceBlock(candidate)) <= tokenBudget) {
+            lastGoodEnd = mid;
+            low = mid + 1;
+          } else {
+            high = mid - 1;
+          }
+        }
+      }
+      const source = sourceFor(input.file, lines, start, lastGoodEnd);
+      chunks.push({
+        index: chunks.length,
+        sources: [source],
+        text: sourceBlock(source),
+        estimatedTokens: estimator(sourceBlock(source)),
+        omitted: [],
+      });
+      start = lastGoodEnd;
     }
   }
   flush();
@@ -273,10 +311,6 @@ export function parseDigest(text: string): ParseDigestResult {
       return v;
     });
     const citations = parsed.citations.map(normalizeCitation);
-    const dropped =
-      typeof parsed.citations_dropped === "number" && Number.isFinite(parsed.citations_dropped)
-        ? Math.max(0, Math.floor(parsed.citations_dropped))
-        : 0;
     return {
       ok: true,
       digest: {
@@ -284,7 +318,8 @@ export function parseDigest(text: string): ParseDigestResult {
         not_found: parsed.not_found,
         citations,
         omitted,
-        citations_dropped: dropped,
+        // This is a harness measurement. Never trust a model-supplied value.
+        citations_dropped: 0,
       },
     };
   } catch (err) {
@@ -437,6 +472,50 @@ function buildReduceMessages(query: string, digest: Digest): ChatMessage[] {
   ];
 }
 
+function estimatedPromptTokens(messages: ChatMessage[], estimator: (text: string) => number): number {
+  return messages.reduce((total, message) => total + estimator(message.content ?? ""), 0);
+}
+
+function fitsContext(
+  messages: ChatMessage[],
+  numCtx: number,
+  responseBudget: number,
+  estimator: (text: string) => number,
+): boolean {
+  return estimatedPromptTokens(messages, estimator) + responseBudget <= numCtx;
+}
+
+function fitReduceDigest(request: DistillRequest, digest: Digest, deps: DistillDeps): Digest {
+  if (fitsContext(buildReduceMessages(request.query, digest), request.numCtx, request.budget, deps.estimator)) {
+    return digest;
+  }
+
+  const truncationNote =
+    "partial answers were truncated by the harness before reduce to fit num_ctx; citations were preserved";
+  const omitted = digest.omitted.includes(truncationNote)
+    ? [...digest.omitted]
+    : [...digest.omitted, truncationNote];
+  const base = { ...digest, answer: "", omitted };
+  if (!fitsContext(buildReduceMessages(request.query, base), request.numCtx, request.budget, deps.estimator)) {
+    throw new DistillConfigError(
+      "num_ctx is too small for reduce metadata and verified citations; increase num_ctx or lower --budget",
+    );
+  }
+
+  let low = 0;
+  let high = digest.answer.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    const candidate = { ...base, answer: digest.answer.slice(0, mid) };
+    if (fitsContext(buildReduceMessages(request.query, candidate), request.numCtx, request.budget, deps.estimator)) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  return { ...base, answer: digest.answer.slice(0, low) };
+}
+
 function rangesForChunk(chunk: DistillChunk): Map<string, CitationRange[]> {
   const ranges = new Map<string, CitationRange[]>();
   for (const source of chunk.sources) {
@@ -464,11 +543,11 @@ async function completeDigest(
         role: "user",
         content:
           `The previous response did not match the required digest JSON schema: ${parsed.error}. ` +
-          "Return only valid JSON with answer, not_found, citations, omitted, and citations_dropped.",
+          "Return only valid JSON with answer, not_found, citations, and omitted.",
       },
     ];
     const repaired = await deps.complete(repairMessages, options);
-    promptTokens = repaired.promptTokens ?? 0;
+    promptTokens += repaired.promptTokens ?? 0;
     evalTokens += repaired.evalTokens ?? 0;
     parsed = parseDigest(repaired.text);
   }
@@ -477,13 +556,26 @@ async function completeDigest(
 }
 
 function contextChunkBudget(request: DistillRequest, deps: DistillDeps): number {
-  const fixed = deps.estimator(SYSTEM_PROMPT) + deps.estimator(request.query) + request.budget + 500;
-  return Math.max(200, request.numCtx - fixed);
+  const emptyChunk: DistillChunk = { index: 0, sources: [], text: "", estimatedTokens: 0, omitted: [] };
+  const fixedPrompt = estimatedPromptTokens(buildMapMessages(request.query, emptyChunk), deps.estimator);
+  const available = request.numCtx - request.budget - fixedPrompt;
+  if (available < 50) {
+    throw new DistillConfigError(
+      "num_ctx is too small for the distill prompt and response budget; increase num_ctx or lower --budget",
+    );
+  }
+  return available;
 }
 
 export async function distill(request: DistillRequest, deps: DistillDeps): Promise<DistillResult> {
   if (!request.query.trim()) throw new DistillConfigError("distill requires -q/--query");
   if (request.inputs.length === 0) throw new DistillConfigError("distill requires at least one input file or stdin");
+  if (!Number.isFinite(request.numCtx) || request.numCtx <= 0 || !Number.isInteger(request.numCtx)) {
+    throw new DistillConfigError("num_ctx must be a positive integer");
+  }
+  if (!Number.isFinite(request.budget) || request.budget <= 0 || !Number.isInteger(request.budget)) {
+    throw new DistillConfigError("budget must be a positive integer");
+  }
   const chunkBudget = contextChunkBudget(request, deps);
   const chunks = planChunks(request.inputs, chunkBudget, deps.estimator);
   if (chunks.length === 0) throw new DistillConfigError("distill found no readable input");
@@ -507,28 +599,36 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
   let evalTokens = 0;
   const parts: Digest[] = [];
   for (const chunk of chunks) {
-    const completed = await completeDigest(deps, buildMapMessages(request.query, chunk), options);
-    promptTokens = completed.promptTokens;
+    const mapMessages = buildMapMessages(request.query, chunk);
+    if (!fitsContext(mapMessages, request.numCtx, request.budget, deps.estimator)) {
+      throw new DistillConfigError(
+        `num_ctx cannot fit planned input chunk ${chunk.index + 1}; increase num_ctx or lower --budget`,
+      );
+    }
+    const completed = await completeDigest(deps, mapMessages, options);
+    promptTokens += completed.promptTokens;
     evalTokens += completed.evalTokens;
     const checked = verifyCitations(completed.digest.citations, readInput, rangesForChunk(chunk));
     parts.push(enforceEvidence({
       ...completed.digest,
       citations: checked.verified,
-      citations_dropped: completed.digest.citations_dropped + checked.dropped.length,
+      omitted: [...(chunk.omitted ?? []), ...completed.digest.omitted],
+      citations_dropped: checked.dropped.length,
     }));
   }
 
   let merged = mergeDigests(parts);
   if (chunks.length > 1) {
-    const completed = await completeDigest(deps, buildReduceMessages(request.query, merged), options);
-    promptTokens = completed.promptTokens;
+    const reduceInput = fitReduceDigest(request, merged, deps);
+    const completed = await completeDigest(deps, buildReduceMessages(request.query, reduceInput), options);
+    promptTokens += completed.promptTokens;
     evalTokens += completed.evalTokens;
     const checked = verifyCitations(completed.digest.citations, readInput);
     merged = enforceEvidence({
       ...completed.digest,
       citations: dedupeCitations([...merged.citations, ...checked.verified]),
-      omitted: [...merged.omitted, ...completed.digest.omitted],
-      citations_dropped: merged.citations_dropped + completed.digest.citations_dropped + checked.dropped.length,
+      omitted: [...reduceInput.omitted, ...completed.digest.omitted],
+      citations_dropped: merged.citations_dropped + checked.dropped.length,
     });
   }
 
