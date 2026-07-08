@@ -1,0 +1,18 @@
+[
+  {
+    "task": "alpha",
+    "agent": "claude",
+    "passed": true,
+    "durationSec": 10,
+    "costUsd": 1,
+    "run": { "experimentId": "exp", "runId": "exp.r001", "repetition": 1, "repeat": 2, "orderSeed": "fixture", "armOrder": ["claude", "claude-delegate"], "cacheState": "cold" }
+  },
+  {
+    "task": "beta",
+    "agent": "claude",
+    "passed": true,
+    "durationSec": 20,
+    "costUsd": 2,
+    "run": { "experimentId": "exp", "runId": "exp.r001", "repetition": 1, "repeat": 2, "orderSeed": "fixture", "armOrder": ["claude", "claude-delegate"], "cacheState": "warm" }
+  }
+]

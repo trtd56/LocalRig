@@ -91,6 +91,7 @@ describe("cmdResearch", () => {
     let fetched = "";
     const rc = await cmdResearch([
       "-q", "when?", "https://example.com/a", "--json", "--cwd", cwd, "--session-id", "direct-url",
+      "--caller", "codex", "--hardware", "test-hardware", "--integration-version", "2.1.0",
     ], {
       env: {},
       fetchPage: async (url) => { fetched = url; return page(url); },
@@ -99,6 +100,12 @@ describe("cmdResearch", () => {
     expect(rc).toBe(0);
     expect(fetched).toBe("https://example.com/a");
     expect(loadSession("direct-url")?.kind).toBe("research");
+    expect(loadSession("direct-url")?.dimensions).toMatchObject({
+      caller: "codex",
+      hardware: "test-hardware",
+      integrationVersion: "2.1.0",
+      localrigVersion: "0.1.0",
+    });
   });
 
   test("selects an auto provider from the environment while using injected I/O", async () => {
@@ -148,7 +155,13 @@ describe("cmdResearch", () => {
       url: "https://example.com/a",
       snapshot_sha256: output.sources[0].snapshot_id,
     });
-    expect(record.tokens).toEqual({ prompt: 16, completion: 7 });
+    expect(record.tokens).toEqual({
+      prompt_last: 12,
+      prompt_total: 16,
+      completion_total: 7,
+      prompt: 12,
+      completion: 7,
+    });
   });
 
   test("classifies timeout, fetch, and model failures", async () => {
@@ -191,7 +204,13 @@ describe("cmdResearch", () => {
     expect(rc).toBe(1);
     const output = JSON.parse(logs.at(-1)!);
     expect(output).toMatchObject({ status: "error", error: "snapshot disk full", error_kind: "internal" });
-    expect(loadSession("write-error")?.tokens).toEqual({ prompt: 16, completion: 7 });
+    expect(loadSession("write-error")?.tokens).toEqual({
+      prompt_last: 12,
+      prompt_total: 16,
+      completion_total: 7,
+      prompt: 12,
+      completion: 7,
+    });
   });
 
   test("submit explicitly rejects research", async () => {

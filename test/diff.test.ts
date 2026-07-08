@@ -266,13 +266,22 @@ describe("cmdDiff", () => {
   });
 
   test("uses stdin, saves kind=diff, and emits the existing digest envelope", async () => {
-    const rc = await cmdDiff(["-q", "relevant?", "--cwd", cwd, "--json", "--session-id", "stdin-diff"], {
+    const rc = await cmdDiff([
+      "-q", "relevant?", "--cwd", cwd, "--json", "--session-id", "stdin-diff",
+      "--caller", "codex", "--hardware", "test-hardware", "--integration-version", "2.1.0",
+    ], {
       readStdin: async () => MODIFIED,
       complete: notFound,
     });
     expect(rc).toBe(0);
     const record = loadSession("stdin-diff")!;
     expect(record.kind).toBe("diff");
+    expect(record.dimensions).toMatchObject({
+      caller: "codex",
+      hardware: "test-hardware",
+      integrationVersion: "2.1.0",
+      localrigVersion: "0.1.0",
+    });
     expect(JSON.parse(record.result).input_kind).toBe("diff");
     expect(JSON.parse(logs.at(-1)!).digest.not_found).toBe(true);
     expect(cmdFeedback(["stdin-diff", "pass", "--source", "test"])).toBe(0);

@@ -21,6 +21,19 @@ describe("defaultConfig", () => {
 });
 
 describe("parseArgs (CLI flags)", () => {
+  test("rejects unknown flags, missing values, NaN, and conflicting permission modes", () => {
+    expect(() => parseArgs(["-p", "x", "--auot"])).toThrow(/unknown option/);
+    expect(() => parseArgs(["-p", "--json"])).toThrow(/requires a value/);
+    expect(() => parseArgs(["-p", "x", "--max-time", "NaN"])).toThrow(/finite number/);
+    expect(() => parseArgs(["-p", "x", "--max-iterations", "1.5"])).toThrow(/integer/);
+    expect(() => parseArgs(["-p", "x", "--auto", "--yolo"])).toThrow(/mutually exclusive/);
+  });
+
+  test("captures repeatable allow/protect path scopes", () => {
+    const opts = parseArgs(["-p", "x", "--allow-path", "src", "--allow-path", "test", "--protect-path", "src/generated"]);
+    expect(opts.allowedPaths).toEqual(["src", "test"]);
+    expect(opts.protectedPaths).toEqual(["src/generated"]);
+  });
   test("--max-time is seconds, stored as ms", () => {
     expect(parseArgs(["-p", "x", "--max-time", "1500"]).config.maxTimeMs).toBe(1_500_000);
   });

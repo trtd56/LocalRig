@@ -10,7 +10,10 @@
   "scripts": {
     "start": "bun run src/index.ts",
     "test": "bun test test/",
+    "test:eval": "bun test ./eval/*.test.ts",
     "eval": "bun run eval/run.ts",
+    "eval:analyze": "bun run eval/analyze-repeated.ts",
+    "eval:gate": "bun run eval/gate.ts",
     "eval:diff-adapter": "bun run eval/check-diff-adapter.ts",
     "eval:research-adapter": "bun run eval/check-research-adapter.ts"
   },

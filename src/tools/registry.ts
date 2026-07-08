@@ -1,5 +1,5 @@
 import type { Config } from "../config.ts";
-import type { ToolContext, ToolDef } from "../types.ts";
+import type { ToolContext, ToolDef, WorkspaceScope } from "../types.ts";
 import { createReadTool } from "./read.ts";
 import { createWriteTool } from "./write.ts";
 import { createEditTool } from "./edit.ts";
@@ -7,7 +7,7 @@ import { createBashTool } from "./bash.ts";
 import { createGrepTool } from "./grep.ts";
 import { createGlobTool } from "./glob.ts";
 import { createTodoTool } from "./todo.ts";
-import { PathOutsideCwdError, resolveExistingPathWithinCwd } from "./path-boundary.ts";
+import { PathOutsideCwdError, PathScopeError, prepareWorkspaceScope, resolvePathWithinScope } from "./path-boundary.ts";
 
 export { renderTodos } from "./todo.ts";
 
@@ -18,34 +18,39 @@ export { renderTodos } from "./todo.ts";
  */
 export function createTools(config: Config, _ctx: ToolContext): ToolDef[] {
   return [
-    createReadTool(config),
-    createWriteTool(config),
-    createEditTool(config),
+    restrictPathTool(createReadTool(config), false, true),
+    restrictPathTool(createWriteTool(config), true, true),
+    restrictPathTool(createEditTool(config), true, true),
     createBashTool(config),
-    createGrepTool(config),
-    createGlobTool(config),
+    restrictPathTool(createGrepTool(config), false, true),
+    restrictPathTool(createGlobTool(config), false, true),
     createTodoTool(config),
   ];
 }
 
 /** Read-only exploration profile for `lh scout`. */
 export function createScoutTools(config: Config, _ctx: ToolContext): ToolDef[] {
-  return [createReadTool(config), createGrepTool(config), createGlobTool(config)].map(restrictToCwd);
+  return [createReadTool(config), createGrepTool(config), createGlobTool(config)].map((tool) => restrictPathTool(tool, false, true));
 }
 
-/** Keep scout discovery inside its repository without narrowing the normal coding agent. */
-function restrictToCwd(tool: ToolDef): ToolDef {
+/** Apply the same cwd/symlink/scope boundary to normal coding and scout tools. */
+function restrictPathTool(tool: ToolDef, mutation = false, allowMissing = false): ToolDef {
   return {
     ...tool,
     async execute(args, ctx) {
       const candidate = typeof args.path === "string" && args.path.length > 0 ? args.path : ".";
+      let scope: WorkspaceScope;
       try {
-        await resolveExistingPathWithinCwd(ctx.cwd, candidate);
+        scope = ctx.scope ?? prepareWorkspaceScope(ctx.cwd);
+        const target = resolvePathWithinScope(scope, candidate, { mustExist: !allowMissing, mutation });
+        args = { ...args, path: target };
       } catch (err) {
-        if (err instanceof PathOutsideCwdError) return { ok: false, output: err.message };
-        return tool.execute(args, ctx);
+        if (err instanceof PathOutsideCwdError || err instanceof PathScopeError) return { ok: false, output: err.message };
+        return { ok: false, output: `${tool.name} path validation failed: ${err instanceof Error ? err.message : String(err)}` };
       }
-      return tool.execute(args, ctx);
+      return tool.execute(args, ctx.cwd === scope.cwd
+        ? ctx
+        : { ...ctx, cwd: scope.cwd });
     },
   };
 }

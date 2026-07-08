@@ -72,7 +72,10 @@ describe("cmdScout", () => {
     fs.mkdirSync(path.join(cwd, "src"), { recursive: true });
     fs.writeFileSync(path.join(cwd, "src", "retry.ts"), "export function withRetry() {}\n");
     const seen: { system?: string; think?: boolean; prompts: string[] } = { prompts: [] };
-    const rc = await cmdScout(["-q", "where is retry?", "--paths", "src", "--cwd", cwd, "--json", "--quiet", "--session-id", "scout-sid"], {
+    const rc = await cmdScout([
+      "-q", "where is retry?", "--paths", "src", "--cwd", cwd, "--json", "--quiet", "--session-id", "scout-sid",
+      "--caller", "codex", "--hardware", "test-hardware", "--integration-version", "2.1.0",
+    ], {
       createAgent: fakeAgentFactory([
         JSON.stringify({
           answer: "Retry is implemented in src/retry.ts.",
@@ -90,7 +93,19 @@ describe("cmdScout", () => {
     expect(rec.prompt).toBe("where is retry?");
     expect(rec.turns).toBe(1);
     expect(rec.toolCalls).toBe(1);
-    expect(rec.tokens).toEqual({ prompt: 100, completion: 10 });
+    expect(rec.dimensions).toMatchObject({
+      caller: "codex",
+      hardware: "test-hardware",
+      integrationVersion: "2.1.0",
+      localrigVersion: "0.1.0",
+    });
+    expect(rec.tokens).toEqual({
+      prompt_last: 100,
+      prompt_total: 100,
+      completion_total: 10,
+      prompt: 100,
+      completion: 10,
+    });
     expect(JSON.parse(rec.result).citations[0]).toEqual({
       file: "src/retry.ts",
       start_line: 1,
@@ -123,8 +138,17 @@ describe("cmdScout", () => {
     expect(rc).toBe(0);
     expect(seen.prompts).toHaveLength(2);
     expect(seen.prompts[1]).toContain("required digest JSON schema");
-    expect(JSON.parse(loadSession("repair-sid")!.result).parse_failed).toBeUndefined();
-    expect(JSON.parse(loadSession("repair-sid")!.result).turns).toBe(2);
+    const repaired = loadSession("repair-sid")!;
+    expect(JSON.parse(repaired.result).parse_failed).toBeUndefined();
+    expect(JSON.parse(repaired.result).turns).toBe(2);
+    expect(repaired.tokens).toMatchObject({
+      prompt_last: 101,
+      prompt_total: 201,
+      completion_total: 20,
+      // v1 aliases intentionally keep their historical meanings.
+      prompt: 101,
+      completion: 20,
+    });
   });
 
   test("uses one dedicated text-only turn for JSON repair", async () => {

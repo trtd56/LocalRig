@@ -26,6 +26,9 @@ interface Delegation {
   turns: number;
   toolCalls: number;
   promptTokens: number;
+  /** Present in v2 summaries; promptTokens is the compatibility fallback. */
+  promptTotalTokens?: number;
+  promptLastTokens?: number;
   completionTokens: number;
   durationMs: number;
   errorKind?: string;
@@ -157,7 +160,7 @@ function localSide(e: Entry | undefined): string {
   let tok = 0;
   let ms = 0;
   for (const d of e.delegations) {
-    tok += (d.promptTokens ?? 0) + (d.completionTokens ?? 0);
+    tok += (d.promptTotalTokens ?? d.promptTokens ?? 0) + (d.completionTokens ?? 0);
     ms += d.durationMs ?? 0;
   }
   const n = e.delegations.length;
@@ -239,7 +242,7 @@ function renderTwoWay(lines: string[], baseByTask: Map<string, Entry>, delegByTa
       delegWall += d.durationSec ?? 0;
       if (d.delegated) delegatedCount++;
       for (const del of d.delegations ?? []) {
-        localTok += (del.promptTokens ?? 0) + (del.completionTokens ?? 0);
+        localTok += (del.promptTotalTokens ?? del.promptTokens ?? 0) + (del.completionTokens ?? 0);
         localMs += del.durationMs ?? 0;
       }
     }

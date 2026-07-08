@@ -57,11 +57,32 @@ export interface ToolDef {
 
 export interface ToolContext {
   cwd: string;
+  /** Canonical filesystem scope enforced by every coding tool. */
+  scope?: WorkspaceScope;
   /** Files already read this session: path -> message seq of latest read. */
   readFiles: Map<string, number>;
   todos: TodoItem[];
   signal: AbortSignal;
+  /** Absolute command deadline. Tools clamp their own timeout to this value. */
+  deadlineAt?: number;
   report?: RunReportBuilder;
+}
+
+/** User-facing path scope before symlinks and relative paths are resolved. */
+export interface WorkspaceScopeInput {
+  /** Paths the agent may inspect or modify. Defaults to the whole cwd. */
+  allowedPaths?: string[];
+  /** Paths the agent may inspect but must never modify. */
+  protectedPaths?: string[];
+}
+
+/** Canonical, cwd-contained path scope used at tool execution time. */
+export interface WorkspaceScope {
+  cwd: string;
+  allowedPaths: string[];
+  protectedPaths: string[];
+  /** Harness-owned Git metadata that sandboxed commands may read/write. */
+  privateGitPaths?: string[];
 }
 
 export interface ToolResult {
@@ -158,7 +179,7 @@ export type RunStatus =
  * on cause (e.g. retry on "connection", give up on "ollama_error") without
  * parsing the free-form `error` string. Only set when `error` is set.
  */
-export type ErrorKind = "connection" | "ollama_error" | "config" | "internal";
+export type ErrorKind = "connection" | "ollama_error" | "config" | "conflict" | "internal";
 
 // ---------- Events the agent loop emits to the UI ----------
 
@@ -174,4 +195,6 @@ export type AgentEvent =
   | { type: "prune"; freedTokens: number }
   | { type: "compact"; beforeTokens: number; afterTokens: number }
   | { type: "status"; message: string }
+  /** Fine-grained runtime timing; session persistence may aggregate these. */
+  | { type: "timing"; phase: "model" | "tool"; durationMs: number; ttftMs?: number }
   | { type: "usage"; promptTokens: number; evalTokens: number; ctxPercent: number };

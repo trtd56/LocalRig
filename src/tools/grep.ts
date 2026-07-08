@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 import type { Config } from "../config.ts";
 import type { ToolDef, ToolResult } from "../types.ts";
 import { globToRegExp } from "./glob.ts";
 import { isBinary } from "./read.ts";
+import { clampToDeadline } from "../runtime/deadline.ts";
+import { runProcess } from "../runtime/process.ts";
 
 const SKIP_DIRS = new Set([".git", "node_modules", "dist", ".venv", "__pycache__"]);
 const MAX_FILE_BYTES = 1024 * 1024; // manual fallback skips files > 1MB
@@ -58,13 +59,34 @@ export function createGrepTool(config: Config): ToolDef {
           };
         }
 
-        const rg = await tryRipgrep(pattern, baseAbs, ctx.cwd, globPat, ignoreCase, config.grepMaxMatches);
+        const timeoutMs = clampToDeadline(config.bashTimeoutMs, ctx.deadlineAt);
+        if (ctx.signal.aborted || timeoutMs <= 0) {
+          return { ok: false, output: grepStoppedMessage(ctx.signal, ctx.deadlineAt) };
+        }
+        const rg = await tryRipgrep(
+          pattern,
+          baseAbs,
+          ctx.cwd,
+          globPat,
+          ignoreCase,
+          config.grepMaxMatches,
+          ctx.signal,
+          timeoutMs,
+        );
         let matches: string[];
         if (rg.available) {
           if (rg.error) return { ok: false, output: rg.error };
           matches = rg.matches;
         } else {
-          matches = await manualGrep(re, baseAbs, ctx.cwd, globPat, config.grepMaxMatches);
+          matches = await manualGrep(
+            re,
+            baseAbs,
+            ctx.cwd,
+            globPat,
+            config.grepMaxMatches,
+            ctx.signal,
+            ctx.deadlineAt,
+          );
         }
 
         if (matches.length === 0) {
@@ -77,6 +99,9 @@ export function createGrepTool(config: Config): ToolDef {
         const shown = Math.min(matches.length, config.grepMaxMatches);
         return { ok: true, output, display: `grep ${pattern} (${shown} matches)` };
       } catch (err) {
+        if (ctx.signal.aborted || (ctx.deadlineAt !== undefined && Date.now() >= ctx.deadlineAt)) {
+          return { ok: false, output: grepStoppedMessage(ctx.signal, ctx.deadlineAt) };
+        }
         return { ok: false, output: `grep failed: ${err instanceof Error ? err.message : String(err)}` };
       }
     },
@@ -93,55 +118,52 @@ interface RgOutcome {
   error?: string;
 }
 
-function tryRipgrep(
+async function tryRipgrep(
   pattern: string,
   baseAbs: string,
   cwd: string,
   globPat: string | undefined,
   ignoreCase: boolean,
   maxMatches: number,
+  signal: AbortSignal,
+  timeoutMs: number,
 ): Promise<RgOutcome> {
-  return new Promise((resolve) => {
-    const rgArgs = ["--line-number", "--no-heading", "--with-filename", "--color", "never"];
-    if (ignoreCase) rgArgs.push("-i");
-    if (globPat) rgArgs.push("--glob", globPat);
-    rgArgs.push("-e", pattern, "--", baseAbs);
+  const rgArgs = ["--line-number", "--no-heading", "--with-filename", "--color", "never"];
+  if (ignoreCase) rgArgs.push("-i");
+  if (globPat) rgArgs.push("--glob", globPat);
+  rgArgs.push("-e", pattern, "--", baseAbs);
 
-    const proc = spawn("rg", rgArgs, { stdio: ["ignore", "pipe", "pipe"] });
-    let stdout = "";
-    let stderr = "";
-    let unavailable = false;
-    proc.stdout.on("data", (c: Buffer) => {
-      stdout += c.toString("utf8");
-      if (stdout.length > maxMatches * 2000) proc.kill("SIGTERM"); // plenty collected
-    });
-    proc.stderr.on("data", (c: Buffer) => {
-      stderr += c.toString("utf8");
-    });
-    proc.on("error", () => {
-      unavailable = true; // rg not installed
-      resolve({ available: false, matches: [] });
-    });
-    proc.on("close", (code) => {
-      if (unavailable) return;
-      if (code !== 0 && code !== 1 && stdout === "") {
-        // 2 = rg error (e.g. bad pattern for rust regex) — fall back to manual? The
-        // JS regex already validated, so report rg's message with a hint.
-        resolve({ available: false, matches: [] });
-        return;
-      }
-      const matches: string[] = [];
-      for (const line of stdout.split("\n")) {
-        if (line === "") continue;
-        const m = /^(.*?):(\d+):(.*)$/.exec(line);
-        if (!m) continue;
-        const rel = relPath(cwd, m[1]!);
-        matches.push(`${rel}:${m[2]}: ${m[3]}`);
-        if (matches.length >= maxMatches) break;
-      }
-      resolve({ available: true, matches });
-    });
+  const captureChars = Math.max(16_000, maxMatches * 4_000);
+  const result = await runProcess({
+    executable: "rg",
+    args: rgArgs,
+    cwd,
+    timeoutMs,
+    signal,
+    maxOutputChars: captureChars,
+    maxSpoolBytes: Math.max(64 * 1024, captureChars * 2),
+    spoolPrefix: "lh-rg",
   });
+  if (result.spoolPath) await fs.unlink(result.spoolPath).catch(() => {});
+  if (result.spawnFailed) return { available: false, matches: [] };
+  if (result.aborted) return { available: true, matches: [], error: "[grep interrupted]" };
+  if (result.timedOut) return { available: true, matches: [], error: `[grep timed out after ${timeoutMs} ms]` };
+
+  const matches: string[] = [];
+  for (const line of result.output.split("\n")) {
+    if (line === "") continue;
+    const match = /^(.*?):(\d+):(.*)$/.exec(line);
+    if (!match) continue;
+    const rel = relPath(cwd, match[1]!);
+    matches.push(`${rel}:${match[2]}: ${match[3]}`);
+    if (matches.length >= maxMatches) break;
+  }
+  if (matches.length === 0 && result.code !== 0 && result.code !== 1) {
+    // rg unavailable/unsupported regex: the already-validated JS fallback can
+    // still answer without exposing process-specific error text.
+    return { available: false, matches: [] };
+  }
+  return { available: true, matches };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +176,10 @@ export async function manualGrep(
   cwd: string,
   globPat: string | undefined,
   maxMatches: number,
+  signal?: AbortSignal,
+  deadlineAt?: number,
 ): Promise<string[]> {
+  throwIfGrepStopped(signal, deadlineAt);
   const globRe = globPat ? globToRegExp(globPat) : null;
   const matchesGlob = (rel: string): boolean => {
     if (!globRe) return true;
@@ -168,11 +193,12 @@ export async function manualGrep(
   if (st.isFile()) {
     files.push(baseAbs);
   } else {
-    await collectFiles(baseAbs, files);
+    await collectFiles(baseAbs, files, signal, deadlineAt);
     files.sort();
   }
 
   for (const file of files) {
+    throwIfGrepStopped(signal, deadlineAt);
     if (out.length >= maxMatches) break;
     const rel = relPath(cwd, file);
     if (!matchesGlob(path.relative(baseAbs, file).split(path.sep).join("/") || path.basename(file))) continue;
@@ -187,6 +213,7 @@ export async function manualGrep(
     if (isBinary(buf)) continue;
     const lines = buf.toString("utf8").split("\n");
     for (let i = 0; i < lines.length; i++) {
+      if ((i & 255) === 0) throwIfGrepStopped(signal, deadlineAt);
       const line = lines[i]!;
       if (re.test(line)) {
         out.push(`${rel}:${i + 1}: ${line.endsWith("\r") ? line.slice(0, -1) : line}`);
@@ -197,7 +224,13 @@ export async function manualGrep(
   return out;
 }
 
-async function collectFiles(dir: string, out: string[]): Promise<void> {
+async function collectFiles(
+  dir: string,
+  out: string[],
+  signal?: AbortSignal,
+  deadlineAt?: number,
+): Promise<void> {
+  throwIfGrepStopped(signal, deadlineAt);
   let entries;
   try {
     entries = await fs.readdir(dir, { withFileTypes: true });
@@ -205,14 +238,29 @@ async function collectFiles(dir: string, out: string[]): Promise<void> {
     return;
   }
   for (const e of entries) {
+    throwIfGrepStopped(signal, deadlineAt);
     const full = path.join(dir, e.name);
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
-      await collectFiles(full, out);
+      await collectFiles(full, out, signal, deadlineAt);
     } else if (e.isFile()) {
       out.push(full);
     }
   }
+}
+
+function throwIfGrepStopped(signal?: AbortSignal, deadlineAt?: number): void {
+  if (signal?.aborted || (deadlineAt !== undefined && Date.now() >= deadlineAt)) {
+    throw signal?.reason ?? new DOMException("grep stopped", "AbortError");
+  }
+}
+
+function grepStoppedMessage(signal: AbortSignal, deadlineAt?: number): string {
+  return deadlineAt !== undefined && Date.now() >= deadlineAt
+    ? "[grep timed out: command deadline reached]"
+    : signal.aborted
+      ? "[grep interrupted]"
+      : "[grep stopped]";
 }
 
 function relPath(cwd: string, abs: string): string {

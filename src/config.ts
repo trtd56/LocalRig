@@ -1,6 +1,6 @@
 /** How mutating tool calls get approved:
- *  "default" asks for every call, "auto" only asks for dangerous bash
- *  commands (see permissions.ts), "yolo" approves everything. */
+ *  "default" asks for every call, "auto" approves only inside the mechanical
+ *  path/OS sandbox, and "yolo" explicitly permits unsandboxed host bash. */
 export type PermissionMode = "default" | "auto" | "yolo";
 
 export interface Config {

@@ -50,6 +50,32 @@ bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 - 所要時間の過去実績: 旧構成では claude 21タスクで約20分、harness 20タスクで約110分。現在の29タスク構成は未計測で、mass-migration のローカル実行だけでも ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない
 - summary の各エントリには `model` フィールドが記録される。harness アームは `LH_MODEL`(未設定なら `defaultConfig.model`)、claude 系アームはオーケストレータに渡している `--model` の値(現状 `sonnet` 固定)
 
+### 反復評価とCIゲート
+
+`--repeat N`（N>=1）とカンマ区切りの複数アームを使うと、同じタスクを反復しながらseed付きでアーム順をローテーションできる。N>1では各反復を `summary-<agent>.<run-id>.rNNN.json`、対応する生ログ・LH_HOME・worker結果へ分離するため、前の反復を上書きしない。既存のN=1 `--run-id` とタスク単位mergeは従来どおり。
+
+```sh
+# 2アームを3反復。ランナー内の各arm初回はcold、以後はwarmラベルで記録
+bun run eval/run.ts \
+  --arms claude,claude-delegate \
+  --task doc-sync,fix-bug \
+  --repeat 3 \
+  --run-id delegate-ci \
+  --order-seed 20260708
+
+# 中央値、p90/p95、品質成功率、上位(caller/orchestrator)コスト節約を集計
+bun run eval:analyze -- --run-id delegate-ci
+
+# 品質低下0pp、上位コスト節約>0 USD/sample、candidate p95<=1800秒をCIゲートにする
+bun run eval:gate -- \
+  --run-id delegate-ci \
+  --max-quality-drop 0 \
+  --min-cost-saving-usd 0 \
+  --max-p95-sec 1800
+```
+
+`run` metadataには反復番号、seed、実際のarm順、cold/warmラベル、git commit/dirty、model名/digest/quantization、Ollama/Claude CLI/caller version、GPUを保存する。coldはプロセス内でそのarmをまだ実行していない最初のsample、warmは先行sampleあり、という順序ラベルであり、Ollamaを強制unloadしたという意味ではない。取得不能な値は`null`にして同じ項目の`error`へ理由を残す。`eval:gate`は「品質非劣性」「上位コスト節約が指定値より大きい」「candidateのp95壁時計が予算内」のいずれかに違反、または必要な測定値が欠けるとnonzeroで終了する。閾値の`--max-quality-drop`は0〜1の比率（0.05 = 5 percentage points）。
+
 ## モデル更新時の回帰手順
 
 ローカルモデル(現行 `qwen36-27b-mtp:latest`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。

@@ -1,6 +1,6 @@
 ---
 name: delegate-local
-description: Delegate mechanical, verifiable coding tasks or preprocess large files, repository exploration, diffs, and multi-page Web research through LocalRig's `lh` CLI to save tokens. Use delegation only with objective checks; use distill/scout/diff/research for question-directed evidence selection. Verify every result and record a verdict with `lh feedback`.
+description: Route work conservatively with LocalRig's `lh advise`, delegate mechanical verifiable coding tasks, or preprocess large files, repository exploration, diffs, and multi-page Web research. Use Local LLM routes only with objective checks and sufficient dimension-matched evidence. Verify every result and record a verdict with `lh feedback`.
 ---
 
 # Delegate to a local LLM (`lh`)
@@ -9,10 +9,18 @@ description: Delegate mechanical, verifiable coding tasks or preprocess large fi
 
 ## When to delegate
 
-**First, check the track record.** Before deciding, read `lh stats --by-kind --json` and find the entry for the `--kind` you would tag this task with. If that kind's `gate.status` is `"block"`, do NOT delegate: do the task yourself, or sharpen the work order — concrete file paths, an explicit definition of done, a `--check` command — and only then try again. The current gate blocks when `graded >= 3` and pass `rate < 50`; with fewer than 3 graded runs the signal is too thin to act on, so fall back to the criteria below.
+**First, ask the conservative router when you have the facts.** It can return exactly eight routes: `direct`, `script`, `delegate`, `batch`, `distill`, `scout`, `diff`, or `research`.
+
+```bash
+lh advise --task "Migrate four files to the new API" --kind types \
+  --files 4 --lines 600 --check --risk low --batch-candidates 2 \
+  --caller claude-code --json
+```
+
+Follow a Local LLM route only when `recommended` is true. `lh advise` sends high/unknown risk, missing checks, unknown/too-small implementation size, missing implementation kind, insufficient/blocked evidence, coverage below 50%, rework above 25%, and unavailable/exceeded p90 latency budgets to `direct`. It filters history by model/hardware/caller; dimension-missing historical runs are reported as `unknown`, never silently counted as matches. With fewer than 3 graded runs the gate is insufficient; afterwards it uses the 95% Wilson success lower bound and blocks below 50%. A codifiable transformation returns `script` without invoking a model.
 
 Delegate when ALL of these hold:
-- The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
+- The task is mechanical and well-scoped: a bugfix with a failing test, multi-file rename/API migration, boilerplate generation, adding tests that mirror an existing pattern, doc/comment updates, or config tweaks.
 - **It clears the cost floor.** Delegation carries a roughly fixed orchestration cost, and most of it is *session startup* (the built-in system-prompt cache), not per-task work: decomposed as **a session-startup cost S (independent of task count) + a per-task cost T** (measured S ≈ $0.10, T ≈ $0.03 under Claude Code 2.1.77 accounting — absolute dollars shift with CLI versions, the structure doesn't). A single delegation costs S+T and only pays when doing the task yourself would cost more — many turns of mechanical editing (multi-file renames/migrations, boilerplate sweeps, a large test file). A task you'd finish in a handful of turns is cheaper to just do yourself. **If you have several independent delegation-worthy tasks, do NOT issue one `lh -p` per task — bundle them into a single `lh batch` call** (see "Batch multiple tasks" below): S is shared and the orchestration turns collapse into one call. Measured same-day (2.1.202, warm cache): hand-rolling N sequential `lh -p` calls cost ≈ $0.60 and *lost* to the do-it-yourself baseline ($0.446), while one `lh batch` call cost ≈ $0.39–0.42 and stayed profitable (−6 to −13% vs baseline, ≈ −30% vs hand-rolled). A task that loses money delegated alone can turn a profit inside a batch.
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
@@ -26,7 +34,9 @@ Do NOT delegate: multi-file design work, anything requiring project-wide context
 ## How to call
 
 ```bash
-lh -p - --json --cwd /abs/path/to/project --kind bugfix --check "bun test test/foo.test.ts" <<'EOF'
+lh -p - --json --cwd /abs/path/to/project --kind bugfix \
+  --caller claude-code --integration-version delegate-local-2026-07 \
+  --check "bun test test/foo.test.ts" <<'EOF'
 <task>
 EOF
 ```
@@ -36,9 +46,12 @@ EOF
 - Always add `--kind <kind>` so `lh stats --by-kind` can show which work types are reliable. Recommended kinds: `rename`, `tests`, `docs`, `types`, `perf`, `bugfix`, `other`.
 - Add `--check "<acceptance command>"` whenever the task has a commandable definition of done. LocalRig runs it after the agent finishes and feeds failures back to the model for up to `--check-retries` attempts (default 2).
 - `--json` prints a single JSON object on stdout: `session_id`, `status` (`ok` | `check_failed` | `max_iterations` | `loop_abort` | ...), `result`, `check`, `report`, `duration_ms`, `tokens`, and a ready-made `feedback_command`.
-- `report.changed_files` lists files changed through the write/edit tools, and `report.commands_run` lists bash commands the local agent ran. Bash-side file changes (`rm`, `mv`, generated files) are not tracked there, so still inspect the diff.
-- Use a Bash timeout of at least 900000 ms (a heavy run plus `--check` retries has been measured near 10 minutes). **Call `lh -p` synchronously — do not use `submit`/`wait` in a headless (`-p`) delegation flow.** It was measured not to shorten wall-clock: for a single task it just adds turns (+33% cost, same effective block), and even in the intended "delegate a big task A, do a small task B meanwhile" case, A dwarfs B, so you finish B and then block on `lh wait` for A's remainder anyway — no net saving (round 5, async-pair). `submit`/`wait`/`poll` earns its keep only in an interactive session where a human advances genuinely unrelated work while the local run proceeds; 27B inference is effectively serial on one Ollama host regardless.
-- Add `--auto` to make the local agent refuse dangerous bash commands instead of running them (recommended when delegating into repos with scripts you haven't read).
+- `report.changed_files` is produced from before/after content snapshots and includes bash changes, deletions, renames, untracked files, and Git-ignored files. Only directories named `.git` and `node_modules` are excluded; net-zero temporary files are absent, so still inspect the diff or touched files. `report.commands_run` lists bash commands the local agent ran.
+- Use stable dimensions on every run, either with the flags above or `LH_CALLER`, `LH_HARDWARE`, and `LH_INTEGRATION_VERSION`. Hardware is auto-detected when omitted, but an explicit ID such as `mac-m4-64gb` is better when GPU/RAM profiles differ.
+- Use a Bash timeout of at least 900000 ms. `--max-time` is a hard deadline from input acquisition through model/tool/check/final sweep; it kills process groups and escaped descendants, and the 0600 full-output spool has a strict 16 MiB cap. **Call `lh -p` synchronously — do not use `submit`/`wait` in a headless (`-p`) delegation flow.** It was measured not to shorten wall-clock: for a single task it just adds turns (+33% cost, same effective block), and even in the intended "delegate a big task A, do a small task B meanwhile" case, A dwarfs B, so you finish B and then block on `lh wait` for A's remainder anyway. `submit`/`wait`/`poll` earns its keep only in an interactive session where a human advances genuinely unrelated work while the local run proceeds.
+- One-shot/batch/submit default to a private Git worktree and `--auto`: the model and checks never edit the caller's checkout directly, and a verified patch is applied only after status/check/scope pass. Failed, timed-out, interrupted, or conflicting runs leave the parent unchanged and, once finalization succeeds, retain `isolation.patch_path`; a finalization/cleanup/rollback failure may retain the diagnostic checkout instead. Apply uses a fixed repo lock and fsynced backup/journal; exceptions and SIGINT roll back, and a later lock owner recovers a process crash. Opportunistic GC removes stale dead-owner or ownerless-orphan execution material while preserving artifacts and unresolved journals.
+- Resume retained work with `lh -p '<narrow correction>' --resume "$SESSION_ID" --json`; it verifies the same repo, baseline fingerprint, patch/mode hashes and replays into a new private checkout. Non-Git/unborn/unmerged/submodule/multiply-linked repositories must opt into direct mutation with `--in-place`—there is no fallback.
+- Path tools stay inside realpath-checked cwd/scope and reject hard-linked mutation targets. Auto bash uses a macOS deny-default sandbox that limits reads to cwd/runtime, denies network, outside/protected writes, other-process signals, and caller secrets. Repeatable `--allow-path`/`--protect-path` narrow path-tool reads/mutations and bash writes; sandboxed bash can still read the whole cwd. Auto bash fails closed on non-macOS. Unsandboxed `--yolo` is rejected in private-worktree mode and requires the explicit, higher-risk `--yolo --in-place` pair.
 - Exit code 0 means the agent believes it finished; non-zero means it stopped early — treat the work as incomplete.
 
 ## Batch multiple tasks — `lh batch`
@@ -55,9 +68,10 @@ EOF
 ```
 
 - Every task MUST carry a unique `id`, a `kind`, and a machine-verifiable `check` scoped to that task alone. Keep each `prompt` a short ticket (target file paths, expected behavior, the command that must pass) — do not paste file contents or spell out the fix; the local agent explores and the `check` is the gate.
-- Each task runs with a fresh context and its own check+repair loop; a failing task does not stop the remaining independent tasks. After all tasks finish, every passed check is re-run once (re-verification sweep) to catch a later task's bash side effects rolling back an earlier task's work.
+- Each task runs with a fresh context and its own check+repair loop; a failing task does not stop the remaining independent tasks. After all tasks finish, every passed check is re-run once. A regression, timeout/SIGINT, or **any workspace mutation by a final check** fails the sweep before the cumulative patch can be applied.
 - `--max-time` is the TOTAL wall-clock budget for the whole batch (tasks that don't start in time report `not_run`). Use a Bash timeout that covers the whole batch (≥ 2100000 ms for ~3 tasks; the local model takes 1–20 min per task, run serially).
 - The JSON reply has a per-task `tasks[]` array (each with `status`, `check.exit_code`, `report.changed_files`). Verify and record feedback per task: `lh feedback <session_id> --task <id> pass|fail --notes "..."` (omitting `--task` fans the verdict out to every task).
+- The default private worktree is transactional for the whole batch: LocalRig applies one patch only when every task and the final sweep pass. A `partial`/`failed` batch leaves the parent checkout untouched and retains the cumulative patch for inspection.
 - Progress persists incrementally: if your session dies mid-batch or right after it, completed tasks' work and check results survive — read the session JSON (`lh sessions`, `lh poll <id> --json`) and record feedback afterwards instead of redoing the work.
 - Do not hand-assemble one mega-prompt telling a single local agent to do everything, and do not call `lh -p` once per subtask — measured same-day, the hand-rolled sequential pattern cost ≈ 1.4× the batch call and lost to just doing the tasks yourself.
 
@@ -87,6 +101,17 @@ lh scout -q "Where is retry behavior defined, registered, and called?" --paths s
 ```
 
 Use the three-way rule: `grep`/scripts for mechanical filtering, `distill` when the input files are already known, `scout` when finding the relevant files is the task. The P2 trigger for scout is a repository question where you expect to inspect five or more files yourself. Before using it, read `lh stats --by-kind --json`; if the `scout` entry has `gate.status:"block"`, do not use scout for this task. Treat scout output as a map: read cited ranges before relying on them, respect `not_found: true`, and record usefulness with `lh feedback <session_id> pass|fail --source claude-code --notes "..."`. `kind` defaults to `scout`.
+
+## Inspect a large diff — `lh diff`
+
+Use `lh diff` when a unified diff is large enough that semantic selection is useful (provisional threshold: 500 lines or 32KB). Small diffs and name/stat questions should stay mechanical.
+
+```bash
+git diff --staged | lh diff -q "Which changes can break callers?" --json
+lh diff --base main --cwd /abs/path/to/project -q "Which changes can break callers?" --json
+```
+
+The harness parses files/hunks and verifies added, deleted, and context-line citations against an immutable SHA-256 diff snapshot, not the later working tree. Treat the digest as a map, inspect cited hunks yourself, and record feedback for `kind=diff`.
 
 ## Research the Web — `lh research`
 
@@ -120,12 +145,15 @@ Before using or committing anything the local agent produced, and **before you r
 Once you have verified (or rejected) the work, record the verdict. This is not optional; the feedback log is what makes delegation quality measurable:
 
 ```bash
-lh feedback <session_id> pass --source claude-code --notes "tests pass, diff minimal"
-lh feedback <session_id> fail --source claude-code --notes "edited wrong file; hallucinated helper API"
+lh feedback "$SESSION_ID" pass --source claude-code --notes "tests pass, diff minimal"
+lh feedback "$SESSION_ID" fail --source claude-code --notes "edited wrong file; hallucinated helper API"
+lh feedback "$SESSION_ID" accepted_after_resume --source claude-code \
+  --failure-code wrong_scope --rework-ms 120000 \
+  --caller-input-tokens 1200 --caller-cache-read-tokens 800 --caller-cost-usd 0.02
 ```
 
-- `pass` = you accepted the work as-is (or with trivial touch-ups).
-- `fail` = you had to redo or substantially fix it. Always include `--notes` explaining the failure mode — notes drive future prompt/harness improvements.
+- `pass` is the compatibility alias for `accepted_as_is`; `fail` maps to `rejected`. Use `accepted_after_resume` when a returned correction was ultimately accepted. Failure code, rework milliseconds, and caller input/output/cache/cost receipt make savings and repair cost measurable.
+- Sessions and feedback use schema v2. Session writes are fsync+atomic rename and detached updates use a generation CAS. Tokens distinguish last-prompt from all-turn totals; durations can include model/tool/check/TTFT components.
 - If the run failed, fix the task yourself afterwards; do not retry delegation more than once for the same task.
 
 ## Send it back — targeted follow-up with `--resume`
@@ -133,11 +161,13 @@ lh feedback <session_id> fail --source claude-code --notes "edited wrong file; h
 When your verification finds a narrow, fixable gap (a broken output-format rule, one missed file — not a fundamental miss), correct it inside the *same* session instead of rewriting the whole work order:
 
 ```bash
-lh -p "The first line must be exactly `FIXED:`. Fix only that." --resume <session_id> --json
+lh -p 'The first line must be exactly FIXED:. Fix only that.' --resume "$SESSION_ID" --json
 ```
 
-`--resume` replays the original transcript, appends your instruction as the next turn, and issues a **new** `session_id` (the JSON and session record carry `resumed_from`). It inherits the original `--cwd` unless you override it. One-shot only — not available in the REPL or `lh submit`; an unknown id returns `error_kind: "config"`. This is the standard way to act on a `feedback fail` when the fix is narrow: it saves rebuilding the full prompt for a re-delegation. Still verify and record a fresh `feedback` verdict on the new session, and don't send back more than once for the same task.
+`--resume` replays the original transcript, appends your instruction as the next turn, and issues a **new** `session_id` (the JSON and session record carry `resumed_from`). If the failed run retained an isolation patch, LocalRig verifies the same real repository, HEAD ref/index/content/mode baseline fingerprint, patch SHA-256, and final-mode SHA-256/content digest, then replays it into a new private checkout—never into the parent. It inherits the original `--cwd`; another repo, a changed parent, or a tampered patch/mode manifest stops with `conflict` before the agent runs. One-shot only — not available in the REPL or `lh submit`; an unknown id returns `error_kind: "config"`. Still verify and record a fresh feedback verdict on the new session, and don't send back more than once.
 
 ## Calibrate
 
-`lh stats --by-kind` shows pass rate, average duration, and gate status by task kind (add `--json` for machine-readable `rate` and `gate.status` per kind — the same track record you consult before delegating or preprocessing, see "When to delegate"). Check it after runs too, to catch a kind whose reliability is slipping and stop delegating it. `lh sessions` lists recent runs when you lost a session id.
+`lh stats --by-kind` shows grading coverage, pass/rework rates, p50/p90 duration, the 95% Wilson lower bound, and gate status by task kind. Use `--model`, `--hardware`, and `--caller` filters; inspect `dimensionCoverage.matched/unknown/excluded` because old unknown records are not evidence for the selected slice. `lh sessions` lists recent runs when you lost a session id.
+
+When changing the model, router thresholds, or integration, remeasure instead of editing the calibrated cost numbers by intuition. `eval/run.ts` supports `--arms`, `--repeat`, `--run-id`, and `--order-seed`; `bun run eval:analyze -- --run-id <id>` aggregates median/p90/p95 and savings, while `bun run eval:gate -- --run-id <id> ...` fails closed on quality, cost, p95, or missing/duplicate metadata.

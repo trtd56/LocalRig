@@ -151,8 +151,8 @@ describe("read tool", () => {
     const res = await tools.get("read")!.execute({ path: "f.txt" }, ctx);
     expect(res.ok).toBe(true);
     expect(res.output).toBe("1\talpha\n2\tbeta\n3\tgamma");
-    expect(res.filePath).toBe(file);
-    expect(ctx.readFiles.has(file)).toBe(true);
+    expect(res.filePath).toBe(fs.realpathSync(file));
+    expect(ctx.readFiles.has(fs.realpathSync(file))).toBe(true);
   });
 
   test("offset and limit select a window with a continue note", async () => {
@@ -266,7 +266,7 @@ describe("write tool", () => {
     expect(res.ok).toBe(true);
     expect(res.output).toContain("wrote 2 lines to");
     expect(fs.readFileSync(path.join(dir, "a/b/c.txt"), "utf8")).toBe("one\ntwo\n");
-    expect(ctx.readFiles.has(path.join(dir, "a/b/c.txt"))).toBe(true);
+    expect(ctx.readFiles.has(fs.realpathSync(path.join(dir, "a/b/c.txt")))).toBe(true);
   });
 
   test("warns when overwriting a never-read file", async () => {
@@ -755,14 +755,14 @@ describe("createTools", () => {
     }
   });
 
-  test("keeps the normal coding-agent read scope unchanged", async () => {
+  test("normal coding tools reject cwd escapes too", async () => {
     const dir = subdir("registry-normal-scope");
     const outside = path.join(tmp, "registry-normal-scope.txt");
     fs.writeFileSync(outside, "outside context\n");
     const { tools, ctx } = makeTools(dir);
     const res = await tools.get("read")!.execute({ path: outside }, ctx);
-    expect(res.ok).toBe(true);
-    expect(res.output).toContain("outside context");
+    expect(res.ok).toBe(false);
+    expect(res.output).toContain("outside the working directory");
   });
 });
 

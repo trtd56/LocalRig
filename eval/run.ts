@@ -7,10 +7,12 @@
 //   bun run eval/run.ts --agent harness --task fix-bug,refactor
 //   bun run eval/run.ts --agent harness --keep     # keep workdirs for inspection
 //   bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r1
+//   bun run eval/run.ts --arms claude,claude-delegate --task fix-bug --repeat 3 --run-id ci --order-seed 42
 //
 // summary-<agent>.json is merged per task across runs, so a --task run only
 // updates the entries for the tasks it executed. With --run-id, writes
-// summary-<agent>.<run-id>.json instead (useful for n=3 measurement cells).
+// summary-<agent>.<run-id>.json instead. With --repeat N, each repetition gets
+// a distinct .rNNN run id and arm order rotates from a seeded starting order.
 
 import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
@@ -19,6 +21,14 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { defaultConfig } from "../src/config.ts";
 import type { FeedbackRecord, SessionRecord } from "../src/session.ts";
+import {
+  buildRunPlan,
+  captureEnvironmentMetadata,
+  mergeSummaryFile,
+  parseRunArgs,
+  safeRunId,
+  type RunMetadata,
+} from "./run-support.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const TASKS_DIR = path.join(ROOT, "eval", "tasks");
@@ -39,6 +49,18 @@ const LH_HOME_ROOT = path.join(RESULTS_DIR, "lh-home");
 // claude-delegate-haiku arm: the worker's result JSONs (<workdir>/.delegate/*.json)
 // are copied here before the workdir is deleted, so worker cost/quality survives.
 const DELEGATE_WORKERS_ROOT = path.join(RESULTS_DIR, "delegate-workers");
+const SUPPORTED_AGENTS = new Set([
+  "harness",
+  "claude",
+  "claude-delegate",
+  "claude-delegate-batchcli",
+  "claude-delegate-async",
+  "claude-delegate-haiku",
+  "claude-delegate-pair-sync",
+  "claude-delegate-pair-async",
+  "claude-scout",
+  "claude-research",
+]);
 // Claude Code writes each session's transcript to
 // ~/.claude/projects/<slug>/<session-id>.jsonl, where <slug> is the run's cwd
 // with every non-[A-Za-z0-9-] char replaced by '-' (verified against real dirs:
@@ -249,6 +271,9 @@ interface DelegationMetric {
   turns: number;
   toolCalls: number;
   promptTokens: number;
+  /** Explicit v2 names prevent prompt-last from being mistaken for run total. */
+  promptLastTokens: number;
+  promptTotalTokens: number;
   completionTokens: number;
   durationMs: number;
   /** ErrorKind bucket (see src/types.ts); present only when the session errored. */
@@ -340,21 +365,8 @@ interface TaskResult {
   workerSessions?: number;
   preprocessQualityFailed?: boolean;
   preprocessQualityNotes?: string[];
-}
-
-function parseArgs() {
-  const argv = process.argv.slice(2);
-  let agent = "harness";
-  let only: Set<string> | undefined;
-  let keep = false;
-  let runId: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "--agent") agent = argv[++i]!;
-    else if (argv[i] === "--task") only = new Set(argv[++i]!.split(",").filter(Boolean));
-    else if (argv[i] === "--keep") keep = true;
-    else if (argv[i] === "--run-id") runId = argv[++i];
-  }
-  return { agent, only, keep, runId };
+  /** Repetition/order/environment provenance for statistically comparable runs. */
+  run: RunMetadata;
 }
 
 function sha(file: string): string {
@@ -446,23 +458,22 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
   }
   if (typeof parsed !== "object" || parsed === null) return {};
   const obj = parsed as Record<string, unknown>;
-  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
   const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
   const asRecord = (v: unknown): Record<string, unknown> | undefined =>
     typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
 
   if (agent === "harness") {
-    // Matches the --json shape in src/index.ts runOneShot(): { status, turns,
-    // tool_calls, tokens: { prompt, completion }, ... }. error_kind isn't
-    // emitted there yet (see types.ts ErrorKind) — read defensively so this
-    // starts working automatically if that's added later.
+    // v2 reports total prompt/completion usage across every turn. Fall back to
+    // the v1 aliases when analysing archived result files.
     const tokens = asRecord(obj.tokens);
     return {
       status: str(obj.status),
       turns: num(obj.turns),
       toolCalls: num(obj.tool_calls),
-      promptTokens: tokens ? num(tokens.prompt) : undefined,
-      completionTokens: tokens ? num(tokens.completion) : undefined,
+      promptTokens: tokens ? num(tokens.prompt_total) ?? num(tokens.prompt) : undefined,
+      completionTokens: tokens ? num(tokens.completion_total) ?? num(tokens.completion) : undefined,
       errorKind: str(obj.error_kind),
     };
   }
@@ -577,7 +588,7 @@ function normalizeCitationFile(file: string, cwd: string | undefined): string {
 function finiteNumber(record: Record<string, unknown> | undefined, ...keys: string[]): number | undefined {
   for (const key of keys) {
     const value = record?.[key];
-    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0) return value;
   }
   return undefined;
 }
@@ -613,7 +624,7 @@ function digestMetrics(result: string | undefined, taskName: string, cwd?: strin
     return {
       digestNotFound: typeof digest.not_found === "boolean" ? digest.not_found : undefined,
       digestCitationsDropped:
-        typeof digest.citations_dropped === "number" && Number.isFinite(digest.citations_dropped)
+        typeof digest.citations_dropped === "number" && Number.isFinite(digest.citations_dropped) && digest.citations_dropped >= 0
           ? digest.citations_dropped
           : undefined,
       digestCitationCount: citations.length,
@@ -661,7 +672,7 @@ function researchQualityNotes(delegations: DelegationMetric[]): string[] {
 
 function scoutQualityNotes(taskName: string, delegations: DelegationMetric[]): string[] {
   const scoutRuns = delegations.filter((d) => d.kind === "scout");
-  if (scoutRuns.length === 0) return [];
+  if (scoutRuns.length === 0) return ["required kind=scout session was not recorded"];
   const notes: string[] = [];
   if (taskName === "scout-honest") {
     for (const d of scoutRuns) {
@@ -702,8 +713,10 @@ function collectDelegationMetrics(lhHome: string, taskName: string): {
           status: rec.status ?? "",
           turns: rec.turns ?? 0,
           toolCalls: rec.toolCalls ?? 0,
-          promptTokens: rec.tokens?.prompt ?? 0,
-          completionTokens: rec.tokens?.completion ?? 0,
+          promptTokens: rec.tokens?.prompt_total ?? rec.tokens?.prompt ?? 0,
+          promptLastTokens: rec.tokens?.prompt_last ?? rec.tokens?.prompt ?? 0,
+          promptTotalTokens: rec.tokens?.prompt_total ?? rec.tokens?.prompt ?? 0,
+          completionTokens: rec.tokens?.completion_total ?? rec.tokens?.completion ?? 0,
           durationMs: rec.durationMs ?? 0,
           errorKind: rec.errorKind,
           ...digestMetrics(rec.result, taskName, rec.cwd),
@@ -724,7 +737,11 @@ function collectDelegationMetrics(lhHome: string, taskName: string): {
     for (const line of lines) {
       try {
         const fb = JSON.parse(line) as Partial<FeedbackRecord>;
-        feedback.push({ sessionId: fb.sessionId ?? "", verdict: fb.verdict ?? "", notes: fb.notes });
+        feedback.push({
+          sessionId: fb.sessionId ?? "",
+          verdict: fb.verdict ?? (fb.outcome === "rejected" ? "fail" : fb.outcome ? "pass" : ""),
+          notes: fb.notes,
+        });
       } catch {
         // Skip a corrupt jsonl line.
       }
@@ -743,7 +760,7 @@ function collectDelegationMetrics(lhHome: string, taskName: string): {
  * result into a WorkerMetric. Tolerates a missing dir (orchestrator never
  * delegated) and unparseable files (kept with just `file` set). Never throws.
  */
-function collectWorkerMetrics(workdir: string, taskName: string): WorkerMetric[] {
+function collectWorkerMetrics(workdir: string, taskName: string, runId?: string): WorkerMetric[] {
   const srcDir = path.join(workdir, ".delegate");
   let files: string[];
   try {
@@ -751,11 +768,13 @@ function collectWorkerMetrics(workdir: string, taskName: string): WorkerMetric[]
   } catch {
     return []; // no .delegate → orchestrator never spawned a worker
   }
-  const destDir = path.join(DELEGATE_WORKERS_ROOT, taskName);
+  const workerRunId = safeRunId(runId);
+  const destDir = path.join(DELEGATE_WORKERS_ROOT, taskName, ...(workerRunId ? [workerRunId] : []));
   fs.rmSync(destDir, { recursive: true, force: true });
   fs.mkdirSync(destDir, { recursive: true });
 
-  const num = (v: unknown): number | undefined => (typeof v === "number" ? v : undefined);
+  const num = (v: unknown): number | undefined =>
+    typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
   const asRecord = (v: unknown): Record<string, unknown> | undefined =>
     typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
 
@@ -826,7 +845,12 @@ function countWorkerSessions(workdirRealpath: string, orchestratorSessionId: str
   }
 }
 
-async function runTask(agent: string, taskDir: string, keep: boolean): Promise<TaskResult> {
+async function runTask(
+  agent: string,
+  taskDir: string,
+  keep: boolean,
+  runMetadata: RunMetadata,
+): Promise<TaskResult> {
   const spec: TaskSpec = JSON.parse(fs.readFileSync(path.join(taskDir, "task.json"), "utf8"));
   const workdir = fs.mkdtempSync(path.join(os.tmpdir(), `lh-eval-${spec.name}-`));
   fs.cpSync(path.join(taskDir, "fixture"), workdir, { recursive: true });
@@ -858,7 +882,8 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     // Suffix keeps arms from sharing an LH_HOME (claude-delegate → <task>,
     // claude-delegate-haiku → <task>-haiku).
     const suffix = isDelegate ? agent.slice("claude-delegate".length) : agent.slice("claude".length);
-    lhHome = path.join(LH_HOME_ROOT, spec.name + suffix);
+    const runSuffix = safeRunId(runMetadata.runId ?? undefined);
+    lhHome = path.join(LH_HOME_ROOT, `${spec.name}${suffix}${runSuffix ? `.${runSuffix}` : ""}`);
     fs.rmSync(lhHome, { recursive: true, force: true });
     fs.mkdirSync(lhHome, { recursive: true });
     env.LH_HOME = lhHome;
@@ -882,10 +907,14 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
 
   const [vcmd, ...vargs] = spec.verify.split(" ") as [string, ...string[]];
   const verify = await run(vcmd, vargs, workdir, 120_000);
-  let passed = verify.code === 0 && testFilesModified.length === 0;
+  let passed = agentRun.code === 0 && verify.code === 0 && testFilesModified.length === 0;
 
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  fs.writeFileSync(path.join(RESULTS_DIR, `${agent}-${spec.name}.log`), agentRun.output);
+  const logRunSuffix = safeRunId(runMetadata.runId ?? undefined);
+  fs.writeFileSync(
+    path.join(RESULTS_DIR, `${agent}-${spec.name}${logRunSuffix ? `.${logRunSuffix}` : ""}.log`),
+    agentRun.output,
+  );
 
   const metrics = extractStructuredMetrics(agent, spec.name, agentRun.stdout);
 
@@ -903,10 +932,12 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
       : [];
     if (preprocessQualityNotes.length > 0) passed = false;
     if (isHaiku) {
-      const workers = collectWorkerMetrics(workdir, spec.name);
+      const workers = collectWorkerMetrics(workdir, spec.name, runMetadata.runId ?? undefined);
       const workerSessions = countWorkerSessions(workdirReal, extractSessionId(agentRun.stdout));
+      if (workers.length === 0) passed = false;
       delegation = { ...lhSide, workers, workerSessions, delegated: workers.length > 0 };
     } else {
+      if (!lhSide.delegated || lhSide.feedback.length === 0) passed = false;
       delegation = {
         ...lhSide,
         preprocessQualityFailed: preprocessQualityNotes.length > 0 || undefined,
@@ -926,6 +957,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
     durationSec,
     agentExitCode: agentRun.code,
     workdir: keep ? workdir : "(removed)",
+    run: runMetadata,
     ...metrics,
     ...(delegation ?? {}),
   };
@@ -940,29 +972,28 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
  * summary-claude.json for a real instance of that data loss.
  */
 function summaryPath(agent: string, runId?: string): string {
-  const safeRunId = runId?.replace(/[^A-Za-z0-9_.-]/g, "-");
-  return path.join(RESULTS_DIR, `summary-${agent}${safeRunId ? `.${safeRunId}` : ""}.json`);
+  const safe = safeRunId(runId);
+  return path.join(RESULTS_DIR, `summary-${agent}${safe ? `.${safe}` : ""}.json`);
 }
 
 function writeSummary(agent: string, newResults: TaskResult[], runId?: string): void {
-  fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  const outPath = summaryPath(agent, runId);
-  let merged: TaskResult[] = [];
-  if (fs.existsSync(outPath)) {
-    try {
-      merged = JSON.parse(fs.readFileSync(outPath, "utf8"));
-    } catch {
-      merged = [];
-    }
-  }
-  const newNames = new Set(newResults.map((r) => r.task));
-  merged = merged.filter((r) => !newNames.has(r.task)).concat(newResults);
-  merged.sort((a, b) => a.task.localeCompare(b.task));
-  fs.writeFileSync(outPath, JSON.stringify(merged, null, 2));
+  mergeSummaryFile(summaryPath(agent, runId), newResults, (result) => result.task);
 }
 
 async function main() {
-  const { agent, only, keep, runId } = parseArgs();
+  let options: ReturnType<typeof parseRunArgs>;
+  try {
+    options = parseRunArgs(process.argv.slice(2));
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(2);
+  }
+  const unsupportedAgents = options.agents.filter((agent) => !SUPPORTED_AGENTS.has(agent));
+  if (unsupportedAgents.length > 0) {
+    console.error(`unknown agent: ${unsupportedAgents.join(", ")}`);
+    process.exit(2);
+  }
+  const { only, keep } = options;
   const tasks = fs
     .readdirSync(TASKS_DIR)
     .filter((t) => fs.existsSync(path.join(TASKS_DIR, t, "task.json")))
@@ -973,20 +1004,57 @@ async function main() {
     process.exit(1);
   }
 
-  const results: TaskResult[] = [];
-  for (const t of tasks) {
-    const result = await runTask(agent, path.join(TASKS_DIR, t), keep);
-    results.push(result);
-    writeSummary(agent, [result], runId);
+  const plan = buildRunPlan(options);
+  const experimentId =
+    options.runId ??
+    (options.repeat > 1 ? plan[0]?.runId?.replace(/\.r\d+$/, "") : undefined) ??
+    null;
+  const environmentByAgent = new Map<string, ReturnType<typeof captureEnvironmentMetadata>>();
+  for (const agent of options.agents) {
+    const metadataModel =
+      agent === "harness" || (isDelegateArm(agent) && agent !== "claude-delegate-haiku") || isPreprocessArm(agent)
+        ? (process.env.LH_MODEL ?? defaultConfig.model)
+        : CLAUDE_ORCHESTRATOR_MODEL;
+    environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, ROOT));
   }
 
-  console.log(`\n=== summary (${agent}) ===`);
+  const sequenceByAgent = new Map<string, number>();
+  const results: TaskResult[] = [];
+  for (const round of plan) {
+    console.log(
+      `\n=== repetition ${round.repetition}/${options.repeat} — run ${round.runId ?? "default"} — arm order ${round.armOrder.join(" → ")} ===`,
+    );
+    for (const t of tasks) {
+      for (let armPosition = 0; armPosition < round.armOrder.length; armPosition++) {
+        const agent = round.armOrder[armPosition]!;
+        const sequenceInArm = (sequenceByAgent.get(agent) ?? 0) + 1;
+        sequenceByAgent.set(agent, sequenceInArm);
+        const runMetadata: RunMetadata = {
+          experimentId,
+          runId: round.runId ?? null,
+          repetition: round.repetition,
+          repeat: options.repeat,
+          orderSeed: options.orderSeed,
+          armOrder: [...round.armOrder],
+          armPosition,
+          sequenceInArm,
+          cacheState: sequenceInArm === 1 ? "cold" : "warm",
+          environment: environmentByAgent.get(agent)!,
+        };
+        const result = await runTask(agent, path.join(TASKS_DIR, t), keep, runMetadata);
+        results.push(result);
+        writeSummary(agent, [result], round.runId);
+      }
+    }
+  }
+
+  console.log("\n=== summary ===");
   for (const r of results) {
     const flag = r.passed ? "PASS" : "FAIL";
     const cheat = r.testFilesModified.length ? ` [test files modified: ${r.testFilesModified.join(", ")}]` : "";
-    console.log(`${flag}  ${r.task}  ${r.durationSec}s${cheat}`);
+    console.log(`${flag}  ${r.agent}  ${r.task}  r${r.run.repetition}  ${r.durationSec}s${cheat}`);
   }
   process.exit(results.every((r) => r.passed) ? 0 : 1);
 }
 
-main();
+if (import.meta.main) await main();

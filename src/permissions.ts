@@ -1,18 +1,18 @@
 // Permission-mode decisions for mutating tool calls. Pure functions only —
-// the agent loop calls canAutoApprove and falls back to its askPermission
-// callback, so this module stays decoupled from any UI.
+// enforcement lives in path-boundary.ts and the bash OS sandbox, never in a
+// command-text classifier.
 import type { PermissionMode } from "./config.ts";
 
 /** True when a mutating tool call may run without asking the user. */
-export function canAutoApprove(mode: PermissionMode, toolName: string, args: Record<string, unknown>): boolean {
+export function canAutoApprove(mode: PermissionMode, _toolName: string, _args: Record<string, unknown>): boolean {
   switch (mode) {
     case "yolo":
       return true;
     case "auto":
-      // Non-bash mutating tools (edit/write) are trusted; bash only when the
-      // command doesn't hit the denylist below.
-      if (toolName !== "bash") return true;
-      return !isDangerousCommand(typeof args.command === "string" ? args.command : "");
+      // All mutations are constrained mechanically by cwd/scope boundaries;
+      // bash additionally runs under the OS sandbox. Command-text denylists are
+      // bypassable and are therefore not part of the security boundary.
+      return true;
     default:
       return false; // "default": always ask
   }
@@ -65,7 +65,7 @@ const WHOLE_COMMAND_PATTERNS: RegExp[] = [
   />\s*\/etc\//,
 ];
 
-/** Conservative denylist check for bash commands run in auto mode. */
+/** Legacy diagnostic classifier retained for API compatibility; not an enforcement boundary. */
 export function isDangerousCommand(cmd: string): boolean {
   if (WHOLE_COMMAND_PATTERNS.some((re) => re.test(cmd))) return true;
   return splitSegments(cmd).some((seg) => {

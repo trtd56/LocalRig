@@ -121,9 +121,9 @@ describe("canAutoApprove", () => {
     expect(canAutoApprove("auto", "write", { path: "a.ts", content: "" })).toBe(true);
   });
 
-  test("auto approves safe bash, asks for dangerous bash", () => {
+  test("auto approval relies on the mechanical sandbox, not a command denylist", () => {
     expect(canAutoApprove("auto", "bash", { command: "bun test" })).toBe(true);
-    expect(canAutoApprove("auto", "bash", { command: "ls && rm -rf /" })).toBe(false);
+    expect(canAutoApprove("auto", "bash", { command: "ls && rm -rf /" })).toBe(true);
   });
 
   test("auto approves a missing/malformed command (the bash tool rejects those itself)", () => {

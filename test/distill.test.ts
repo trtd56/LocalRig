@@ -453,7 +453,10 @@ describe("cmdDistill", () => {
   test("reads a file, saves a distill session, and exposes JSON-safe result data", async () => {
     fs.writeFileSync(path.join(cwd, "log.txt"), "root cause: bad import\nsecondary failure\n");
     const rc = await cmdDistill(
-      ["-q", "root?", "log.txt", "--cwd", cwd, "--json", "--quiet", "--session-id", "distill-sid"],
+      [
+        "-q", "root?", "log.txt", "--cwd", cwd, "--json", "--quiet", "--session-id", "distill-sid",
+        "--caller", "codex", "--hardware", "test-hardware", "--integration-version", "2.1.0",
+      ],
       {
         readStdin: async () => "",
         complete: completeWithDigest(
@@ -470,7 +473,19 @@ describe("cmdDistill", () => {
     const rec = loadSession("distill-sid")!;
     expect(rec.kind).toBe("distill");
     expect(rec.prompt).toBe("root?");
-    expect(rec.tokens).toEqual({ prompt: 12, completion: 3 });
+    expect(rec.dimensions).toMatchObject({
+      caller: "codex",
+      hardware: "test-hardware",
+      integrationVersion: "2.1.0",
+      localrigVersion: "0.1.0",
+    });
+    expect(rec.tokens).toEqual({
+      prompt_last: 12,
+      prompt_total: 12,
+      completion_total: 3,
+      prompt: 12,
+      completion: 3,
+    });
     expect(JSON.parse(rec.result).citations[0].file).toBe("log.txt");
   });
 

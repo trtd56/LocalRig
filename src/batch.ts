@@ -6,7 +6,7 @@
 // it stays unit-testable without a live model.
 
 import type { BatchStatus, CheckRecord } from "./session.ts";
-import type { ChangedFileAction, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
+import type { ChangedFileAction, ChatMessage, ErrorKind, RunReport, RunStatus, WorkspaceScope } from "./types.ts";
 
 const ID_PATTERN = /^[A-Za-z0-9_-]+$/;
 
@@ -21,6 +21,10 @@ export interface BatchTask {
   check?: string;
   /** Repair attempts after a failing check; defaults to the one-shot 2. */
   checkRetries?: number;
+  /** Optional per-task narrowing; intersected with CLI --allow-path values. */
+  allowedPaths?: string[];
+  /** Paths visible to the task but forbidden to modify. */
+  protectedPaths?: string[];
 }
 
 /** A rejected manifest. Carries the "config" ErrorKind so callers can branch
@@ -94,6 +98,14 @@ export function parseManifest(text: string): BatchTask[] {
         throw new BatchConfigError(`task ${id}: "check_retries" must be a number >= 0`);
       }
       task.checkRetries = Math.floor(n);
+    }
+    for (const [jsonName, field] of [["allowed_paths", "allowedPaths"], ["protected_paths", "protectedPaths"]] as const) {
+      const value = raw[jsonName];
+      if (value === undefined) continue;
+      if (!Array.isArray(value) || value.length === 0 || value.some((entry) => typeof entry !== "string" || entry.trim() === "")) {
+        throw new BatchConfigError(`task ${id}: "${jsonName}" must be a non-empty array of non-empty strings`);
+      }
+      task[field] = value as string[];
     }
     tasks.push(task);
   }
@@ -183,10 +195,17 @@ export interface BatchDeps {
   now: () => number;
   /** Build a fresh agent (clean context) for the next task, seeded with the
    *  batch's one shared system prompt (same string for every task). */
-  createAgent: (systemPrompt: string) => BatchAgent;
+  createAgent: (systemPrompt: string, task: BatchTask, scope?: WorkspaceScope) => BatchAgent;
   /** Set the wall-clock budget handed to the next agent.run() (0 = unlimited). */
   applyBudget: (ms: number) => void;
-  runCheck: (command: string, timeoutMs: number, attempts: number) => Promise<CheckRecord>;
+  runCheck: (
+    command: string,
+    timeoutMs: number,
+    attempts: number,
+    signal?: AbortSignal,
+    deadlineAt?: number,
+    scope?: WorkspaceScope,
+  ) => Promise<CheckRecord>;
 }
 
 /** A task that never ran — a fatal earlier task aborted the batch, or the total
@@ -246,7 +265,11 @@ export async function reverifyBatch(
     if (e.task.check && e.status === "ok") {
       const check = await recheck(e.task);
       if (check.exit_code !== 0) {
-        out.push({ ...e, status: "check_failed", check: { ...check, regressed: true } });
+        out.push({
+          ...e,
+          status: check.timed_out ? "timeout" : "check_failed",
+          check: { ...check, regressed: true },
+        });
         continue;
       }
     }

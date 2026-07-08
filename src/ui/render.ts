@@ -89,6 +89,9 @@ export function createRenderer(
         ensureNewline();
         out.write(c.dim(`· ${e.message}`) + "\n");
         break;
+      case "timing":
+        // Aggregated by machine-readable session metrics; intentionally quiet.
+        break;
       case "usage":
         if (verbose) {
           ensureNewline();

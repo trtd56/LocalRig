@@ -5,6 +5,7 @@ import * as fs from "node:fs";
 import * as readline from "node:readline";
 import * as path from "node:path";
 import { Agent } from "./agent.ts";
+import { advise, AdviceConfigError, parseAdviceArgs, type AdviceResult } from "./advice.ts";
 import {
   type BatchAgent,
   type BatchDeps,
@@ -48,9 +49,29 @@ import {
 } from "./research.ts";
 import { buildScoutSystemPrompt, buildSystemPrompt } from "./prompt/system.ts";
 import { createScoutTools } from "./tools/registry.ts";
+import {
+  intersectWorkspaceScopes,
+  prepareWorkspaceScope,
+} from "./tools/path-boundary.ts";
+import {
+  captureWorkspaceSnapshot,
+  changedFileScopeViolations,
+  reportFromSnapshots,
+} from "./workspace-snapshot.ts";
 import { isBinary } from "./tools/read.ts";
 import { createRenderer, c } from "./ui/render.ts";
-import type { AgentEvent, ChatMessage, ChatRequestOptions, ErrorKind, RunReport, RunStatus } from "./types.ts";
+import type { AgentEvent, ChatMessage, ChatRequestOptions, ErrorKind, RunReport, RunStatus, WorkspaceScope } from "./types.ts";
+import { RunDeadline } from "./runtime/deadline.ts";
+import {
+  applyArtifact,
+  cleanupIsolation,
+  finalizeIsolation,
+  isolationMetadata,
+  mapIsolationPath,
+  prepareIsolation,
+  validateIsolationSource,
+} from "./isolation/worktree.ts";
+import { IsolationError, type IsolationArtifact, type IsolationHandle, type IsolationSessionMetadata } from "./isolation/types.ts";
 import {
   appendFeedback,
   type BatchStatus,
@@ -61,10 +82,17 @@ import {
   listSessionIds,
   loadSession,
   newSessionId,
+  InvalidSessionIdError,
   readFeedback,
   ResumeError,
   restoreTranscript,
+  runtimeMetricDimensions,
   saveSession,
+  sessionTokens,
+  SessionStoreError,
+  validateSessionId,
+  type CallerReceipt,
+  type FeedbackOutcome,
   type SessionRecord,
   type TaskRecord,
 } from "./session.ts";
@@ -84,7 +112,8 @@ Usage:
                             start a detached one-shot and return immediately
   lh batch --tasks <file|-> [--json]
                             run several independent tasks in one session (one
-                            Agent, shared cwd); per-task status/check/report
+                            fresh Agent context per task, shared cwd); per-task
+                            status/check/report
   lh distill -q "question" [files...] [--json]
                             extract a citation-checked digest from large files
                             or stdin before sending it to an upstream agent
@@ -100,11 +129,15 @@ Usage:
   lh wait <id> [--timeout 1200] [--json]
                             wait for a submitted session to finish
   lh poll <id> [--json]     inspect a submitted session without blocking
-  lh feedback <id> <pass|fail> [--notes "why"] [--source claude-code]
+  lh feedback <id> <pass|fail|accepted_as_is|accepted_after_resume|rejected>
+                            [--notes "why"] [--source claude-code]
                             grade a past session (use --last for the newest)
   lh sessions [-n N]        list recent sessions with their feedback
   lh stats [--json] [--by-kind]
                             delegation pass rate from recorded feedback
+  lh advise --task "work" [facts...] [--json]
+                            choose direct/script/delegate/batch or a context
+                            preprocessing route from task facts and track record
 
 One-shot flags:
   --json                    machine output: single JSON object on stdout,
@@ -125,11 +158,30 @@ One-shot flags:
   --check-retries N         repair attempts after a failing check (default: 2)
   --kind KIND               tag this delegation (recommended: rename, tests,
                             docs, types, perf, bugfix, other)
+  --caller NAME             upstream caller/integration name (or LH_CALLER)
+  --hardware ID             stable hardware profile id (or LH_HARDWARE)
+  --integration-version V   caller integration version (or LH_INTEGRATION_VERSION)
+  --allow-path PATH         narrow path-tool access and bash writes to PATH
+                            (repeatable; cwd-relative; bash can still read cwd)
+  --protect-path PATH       allow reads but reject modifications (repeatable)
+  --worktree, --isolate     run in a private Git worktree and apply a verified
+                            patch afterwards (default for one-shot/batch)
+  --in-place                legacy mode: let the agent modify --cwd directly
+  --resume ID               continue a saved session (one-shot only): restore
+                            its transcript, append the prompt as a follow-up,
+                            and resume the agent loop. Records resumed_from and
+                            defaults --cwd to the original session's directory
+  --auto                    use cwd/scope checks and the macOS bash sandbox
+                            (the safe one-shot/batch default)
+  --yolo                    explicitly allow unsandboxed host shell execution
+                            (requires --in-place)
+  -v, --verbose             verbose progress (tool output, token usage)
 
 Batch flags:
   --tasks FILE|-            JSON manifest of tasks (- reads stdin). Shape:
                             {"tasks":[{"id","prompt","kind?","check?",
-                            "check_retries?"}]} (a bare [...] array also works).
+                            "check_retries?","allowed_paths?",
+                            "protected_paths?"}]} (a bare [...] array also works).
                             Tasks run in order, each in a fresh context (system
                             prompt + that task's prompt only); --cwd, --json,
                             --quiet, -v, --auto/--yolo apply. --max-time here is
@@ -168,14 +220,21 @@ Research flags:
   --budget TOKENS           target digest output budget (default: 2000)
   --think / --no-think      thinking is off by default; --think enables it
   --resume                  not supported; research runs synchronously
-  --resume ID               continue a saved session (one-shot only): restore
-                            its transcript, append the prompt as a follow-up,
-                            and resume the agent loop. Records resumed_from and
-                            defaults --cwd to the original session's directory
-  --auto                    deny dangerous bash instead of the default
-                            approve-everything (one-shot cannot prompt)
-  --yolo                    approve all mutating tools (one-shot default)
-  -v, --verbose             verbose progress (tool output, token usage)
+Advise flags:
+  -p, --prompt, --task TEXT task to route (or supply one positional argument)
+  --kind KIND               feedback kind used for the historical gate
+  --files/--lines/--bytes N known input/target size
+  --check / --no-check      whether an objective acceptance check exists
+  --risk LEVEL              low, medium, high, or unknown
+  --caller/--model/--hardware NAME
+                            filter historical evidence by execution dimension
+  --latency-budget SECONDS  maximum acceptable p90 duration
+  --batch-candidates N      number of independent eligible tasks
+  --web-sources N           number of Web sources needing semantic selection
+  --scriptable              a deterministic script can perform the work
+Stats flags:
+  --model/--hardware/--caller NAME
+                            filter outcomes by execution dimension
 
 Exit codes: 0 task completed, 1 stopped early (loop/max-iterations/error), 130 interrupted.`;
 
@@ -192,6 +251,9 @@ interface CliOptions {
   checkCommand?: string;
   checkRetries: number;
   kind?: string;
+  caller?: string;
+  hardware?: string;
+  integrationVersion?: string;
   sessionId?: string;
   resumeFrom?: string;
   tasksFile?: string;
@@ -207,6 +269,18 @@ interface CliOptions {
   maxResults: number;
   maxPages: number;
   positionals: string[];
+  allowedPaths: string[];
+  protectedPaths: string[];
+  /** Legacy direct mutation mode. Private worktree isolation is the default. */
+  inPlace: boolean;
+}
+
+export class CliConfigError extends Error {
+  readonly kind: ErrorKind = "config";
+  constructor(message: string) {
+    super(message);
+    this.name = "CliConfigError";
+  }
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -229,6 +303,9 @@ export function parseArgs(argv: string[]): CliOptions {
     maxResults: 8,
     maxPages: 5,
     positionals: [],
+    allowedPaths: [],
+    protectedPaths: [],
+    inPlace: false,
   };
   // Fields already pinned by an env var baked into defaultConfig at load time.
   // --model must not clobber these when it re-resolves a profile for the new
@@ -236,73 +313,121 @@ export function parseArgs(argv: string[]): CliOptions {
   const explicitProfileFields = new Set<ProfileField>(
     (Object.keys(PROFILE_FIELD_ENV) as ProfileField[]).filter((f) => process.env[PROFILE_FIELD_ENV[f]] !== undefined),
   );
+  let permissionFlag: "auto" | "yolo" | undefined;
+  let isolationFlag: "worktree" | "in_place" | undefined;
+  const fail = (message: string): never => { throw new CliConfigError(message); };
+  const valueAfter = (index: number, flag: string, allowDash = false): string => {
+    const value = argv[index + 1];
+    if (value === undefined || (!allowDash && value.startsWith("-") && value !== "-")) fail(`${flag} requires a value`);
+    return value!;
+  };
+  const numberAfter = (index: number, flag: string, options: { integer?: boolean; min?: number } = {}): number => {
+    const raw = valueAfter(index, flag, true);
+    const value = Number(raw);
+    if (!Number.isFinite(value)) fail(`${flag} must be a finite number`);
+    if (options.integer && !Number.isInteger(value)) fail(`${flag} must be an integer`);
+    if (options.min !== undefined && value < options.min) fail(`${flag} must be >= ${options.min}`);
+    return value;
+  };
+
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
     switch (a) {
       case "-p":
       case "--print":
-        opts.prompt = argv[++i];
+        opts.prompt = valueAfter(i, a);
+        i++;
         break;
       case "--model":
-        config.model = argv[++i]!;
+        config.model = valueAfter(i, a);
+        i++;
         applyProfile(config, config.model, explicitProfileFields);
         break;
       case "--num-ctx":
-        config.numCtx = Number(argv[++i]);
+        config.numCtx = numberAfter(i, a, { integer: true, min: 1 });
+        i++;
         break;
       case "--num-predict":
-        config.numPredict = Number(argv[++i]);
+        config.numPredict = numberAfter(i, a, { integer: true, min: 1 });
+        i++;
         break;
       case "--temperature":
-        config.temperature = Number(argv[++i]);
+        config.temperature = numberAfter(i, a, { min: 0 });
+        i++;
         explicitProfileFields.add("temperature");
         break;
       case "--presence-penalty":
-        config.presencePenalty = Number(argv[++i]);
+        config.presencePenalty = numberAfter(i, a);
+        i++;
         explicitProfileFields.add("presencePenalty");
         break;
       case "--max-iterations":
-        config.maxIterations = Number(argv[++i]);
+        config.maxIterations = numberAfter(i, a, { integer: true, min: 0 });
+        i++;
         opts.maxIterationsSet = true;
         break;
       case "--max-time":
-        config.maxTimeMs = Number(argv[++i]) * 1000;
+        config.maxTimeMs = numberAfter(i, a, { min: 0 }) * 1000;
+        i++;
         opts.maxTimeSet = true;
         break;
       case "--think-budget":
-        config.thinkBudgetChars = Number(argv[++i]);
+        config.thinkBudgetChars = numberAfter(i, a, { integer: true, min: 0 });
+        i++;
         explicitProfileFields.add("thinkBudgetChars");
         break;
       case "--headroom":
-        config.headroomTokens = Number(argv[++i]);
+        config.headroomTokens = numberAfter(i, a, { integer: true, min: 0 });
+        i++;
         break;
       case "--cwd":
-        opts.cwd = argv[++i];
+        opts.cwd = valueAfter(i, a);
+        i++;
         break;
       case "--check":
-        opts.checkCommand = argv[++i];
+        opts.checkCommand = valueAfter(i, a);
+        i++;
         break;
       case "--check-retries":
-        opts.checkRetries = Number(argv[++i]);
+        opts.checkRetries = numberAfter(i, a, { integer: true, min: 0 });
+        i++;
         break;
       case "--kind":
-        opts.kind = argv[++i];
+        opts.kind = valueAfter(i, a);
+        i++;
+        break;
+      case "--caller":
+        opts.caller = valueAfter(i, a);
+        i++;
+        break;
+      case "--hardware":
+        opts.hardware = valueAfter(i, a);
+        i++;
+        break;
+      case "--integration-version":
+        opts.integrationVersion = valueAfter(i, a);
+        i++;
         break;
       case "--session-id":
-        opts.sessionId = argv[++i];
+        opts.sessionId = validateSessionId(valueAfter(i, a));
+        i++;
         break;
       case "--resume":
-        opts.resumeFrom = argv[++i];
+        opts.resumeFrom = validateSessionId(valueAfter(i, a));
+        i++;
         break;
       case "--tasks":
-        opts.tasksFile = argv[++i];
+        opts.tasksFile = valueAfter(i, a);
+        i++;
         break;
       case "-q":
       case "--query":
-        opts.distillQuery = argv[++i];
+        opts.distillQuery = valueAfter(i, a);
+        i++;
         break;
       case "--budget":
-        opts.distillBudget = Number(argv[++i]);
+        opts.distillBudget = numberAfter(i, a, { integer: true, min: 1 });
+        i++;
         break;
       case "--think":
         opts.distillThink = true;
@@ -314,25 +439,40 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.staged = true;
         break;
       case "--base":
-        if (argv[i + 1] === undefined || argv[i + 1]!.startsWith("-")) opts.base = "";
-        else opts.base = argv[++i]!;
+        opts.base = valueAfter(i, a);
+        i++;
         break;
       case "--search-provider":
-        opts.searchProvider = argv[++i] ?? "";
+        opts.searchProvider = valueAfter(i, a);
+        i++;
         break;
       case "--search-url":
-        opts.searchUrl = argv[++i];
+        opts.searchUrl = valueAfter(i, a);
+        i++;
         break;
       case "--max-results":
-        opts.maxResults = Number(argv[++i]);
+        opts.maxResults = numberAfter(i, a, { integer: true, min: 1 });
+        i++;
         break;
       case "--max-pages":
-        opts.maxPages = Number(argv[++i]);
+        opts.maxPages = numberAfter(i, a, { integer: true, min: 1 });
+        i++;
         break;
       case "--paths":
+        if (argv[i + 1] === undefined || argv[i + 1]!.startsWith("-")) fail("--paths requires at least one path");
         while (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("-")) {
           opts.scoutPaths.push(argv[++i]!);
         }
+        break;
+      case "--allow-path":
+      case "--allowed-path":
+        opts.allowedPaths.push(valueAfter(i, a));
+        i++;
+        break;
+      case "--protect-path":
+      case "--protected-path":
+        opts.protectedPaths.push(valueAfter(i, a));
+        i++;
         break;
       case "--json":
         opts.json = true;
@@ -341,13 +481,28 @@ export function parseArgs(argv: string[]): CliOptions {
         opts.quiet = true;
         break;
       case "--auto":
+        if (permissionFlag && permissionFlag !== "auto") fail("--auto and --yolo are mutually exclusive");
+        permissionFlag = "auto";
         config.permissionMode = "auto";
         opts.permissionModeSet = true;
         break;
       case "--yolo":
       case "--dangerously-skip-permissions":
+        if (permissionFlag && permissionFlag !== "yolo") fail("--auto and --yolo are mutually exclusive");
+        permissionFlag = "yolo";
         config.permissionMode = "yolo";
         opts.permissionModeSet = true;
+        break;
+      case "--in-place":
+        if (isolationFlag && isolationFlag !== "in_place") fail("--in-place and --worktree/--isolate are mutually exclusive");
+        isolationFlag = "in_place";
+        opts.inPlace = true;
+        break;
+      case "--worktree":
+      case "--isolate":
+        if (isolationFlag && isolationFlag !== "worktree") fail("--in-place and --worktree/--isolate are mutually exclusive");
+        isolationFlag = "worktree";
+        opts.inPlace = false;
         break;
       case "-v":
       case "--verbose":
@@ -359,60 +514,168 @@ export function parseArgs(argv: string[]): CliOptions {
         process.exit(0);
         break;
       default:
-        if (!a.startsWith("-")) opts.positionals.push(a);
+        if (a.startsWith("-")) fail(`unknown option: ${a}`);
+        opts.positionals.push(a);
         break;
     }
   }
+  const requireFinite = (value: number, name: string, options: { integer?: boolean; min?: number; max?: number } = {}) => {
+    if (!Number.isFinite(value)) fail(`${name} must be a finite number`);
+    if (options.integer && !Number.isInteger(value)) fail(`${name} must be an integer`);
+    if (options.min !== undefined && value < options.min) fail(`${name} must be >= ${options.min}`);
+    if (options.max !== undefined && value > options.max) fail(`${name} must be <= ${options.max}`);
+  };
+  if (!config.model.trim()) fail("--model must not be empty");
+  requireFinite(config.numCtx, "--num-ctx", { integer: true, min: 1 });
+  requireFinite(config.numPredict, "--num-predict", { integer: true, min: 1 });
+  requireFinite(config.temperature, "--temperature", { min: 0 });
+  requireFinite(config.topP, "top_p configuration", { min: 0, max: 1 });
+  requireFinite(config.topK, "top_k configuration", { integer: true, min: 1 });
+  requireFinite(config.presencePenalty, "--presence-penalty");
+  requireFinite(config.maxIterations, "--max-iterations", { integer: true, min: 0 });
+  requireFinite(config.maxTimeMs, "--max-time", { min: 0 });
+  requireFinite(config.thinkBudgetChars, "--think-budget", { integer: true, min: 0 });
+  requireFinite(config.headroomTokens, "--headroom", { integer: true, min: 0 });
+  if (opts.distillThink && opts.noThink) fail("--think and --no-think are mutually exclusive");
   return opts;
 }
 
-async function readStdin(): Promise<string> {
-  return (await readStdinRaw()).trim();
+async function readStdin(signal?: AbortSignal): Promise<string> {
+  return (await readStdinRaw(signal)).trim();
 }
 
-async function readStdinRaw(): Promise<string> {
+async function readStdinRaw(signal?: AbortSignal): Promise<string> {
   const chunks: Buffer[] = [];
-  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8");
+  const onAbort = () => process.stdin.destroy(
+    signal?.reason instanceof Error ? signal.reason : new DOMException("Input interrupted", "AbortError"),
+  );
+  if (signal?.aborted) onAbort();
+  else signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    for await (const chunk of process.stdin) {
+      if (signal?.aborted) throw signal.reason ?? new DOMException("Input interrupted", "AbortError");
+      chunks.push(chunk as Buffer);
+    }
+    if (signal?.aborted) throw signal.reason ?? new DOMException("Input interrupted", "AbortError");
+    return Buffer.concat(chunks).toString("utf8");
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
 }
 
 // ---------- subcommands ----------
 
 export function cmdFeedback(argv: string[]): number {
   let id: string | undefined;
+  let json = false;
   let taskId: string | undefined;
-  let verdict: "pass" | "fail" | undefined;
+  let outcome: FeedbackOutcome | undefined;
   let notes: string | undefined;
   let source: string | undefined;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i]!;
-    if (a === "--last") id = latestSessionId() ?? undefined;
-    else if (a === "--task") taskId = argv[++i];
-    else if (a === "--notes") notes = argv[++i];
-    else if (a === "--source") source = argv[++i];
-    else if (a === "pass" || a === "fail") verdict = a;
-    else if (!a.startsWith("-") && id === undefined) id = a;
-  }
-  if (!id || !verdict) {
-    console.error('usage: lh feedback <session-id|--last> [--task <id>] <pass|fail> [--notes "why"] [--source name]');
+  let failureCode: string | undefined;
+  let reworkMs: number | undefined;
+  let hardware: string | undefined;
+  const receipt: CallerReceipt = {};
+  const required = (i: number, flag: string): string => {
+    const value = argv[i + 1];
+    if (value === undefined || value.startsWith("-")) throw new CliConfigError(`${flag} requires a value`);
+    return value;
+  };
+  const numberRequired = (i: number, flag: string): number => {
+    const value = Number(required(i, flag));
+    if (!Number.isFinite(value) || value < 0) throw new CliConfigError(`${flag} must be a finite number >= 0`);
+    return value;
+  };
+  try {
+    for (let i = 0; i < argv.length; i++) {
+      const a = argv[i]!;
+      if (a === "--json") json = true;
+      else if (a === "--last") id = latestSessionId() ?? undefined;
+      else if (a === "--task") { taskId = required(i, a); i++; }
+      else if (a === "--notes") { notes = required(i, a); i++; }
+      else if (a === "--source") { source = required(i, a); i++; }
+      else if (a === "--failure-code") { failureCode = required(i, a); i++; }
+      else if (a === "--rework-ms") { reworkMs = numberRequired(i, a); i++; }
+      else if (a === "--hardware") { hardware = required(i, a); i++; }
+      else if (a === "--caller-input-tokens") { receipt.inputTokens = numberRequired(i, a); i++; }
+      else if (a === "--caller-output-tokens") { receipt.outputTokens = numberRequired(i, a); i++; }
+      else if (a === "--caller-cache-read-tokens") { receipt.cacheReadTokens = numberRequired(i, a); i++; }
+      else if (a === "--caller-cache-write-tokens") { receipt.cacheWriteTokens = numberRequired(i, a); i++; }
+      else if (a === "--caller-cost-usd") { receipt.costUsd = numberRequired(i, a); i++; }
+      else if (["pass", "fail", "accepted_as_is", "accepted_after_resume", "rejected"].includes(a)) {
+        if (outcome) throw new CliConfigError("feedback accepts exactly one outcome");
+        outcome = a === "pass" || a === "accepted_as_is"
+          ? "accepted_as_is"
+          : a === "fail" || a === "rejected"
+            ? "rejected"
+            : "accepted_after_resume";
+      }
+      else if (!a.startsWith("-") && id === undefined) id = a;
+      else throw new CliConfigError(a.startsWith("-") ? `unknown feedback option: ${a}` : `unexpected feedback argument: ${a}`);
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (json || argv.includes("--json")) {
+      console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    } else {
+      console.error(`error: ${message}`);
+    }
     return 1;
   }
-  const session = loadSession(id);
+  if (id !== undefined) {
+    try {
+      id = validateSessionId(id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+      else console.error(`error: ${message}`);
+      return 1;
+    }
+  }
+  if (!id || !outcome) {
+    const usage = 'usage: lh feedback <session-id|--last> [--task <id>] <pass|fail|accepted_as_is|accepted_after_resume|rejected> [--notes "why"] [--source name]';
+    if (json) console.log(JSON.stringify({ status: "error", error: usage, error_kind: "config" satisfies ErrorKind }));
+    else console.error(usage);
+    return 1;
+  }
+  let session: SessionRecord | null;
+  try {
+    session = loadSession(id);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    else console.error(`error: ${message}`);
+    return 1;
+  }
   if (!session) {
-    console.error(`unknown session: ${id} (see \`lh sessions\`)`);
+    const message = `unknown session: ${id} (see \`lh sessions\`)`;
+    if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    else console.error(message);
     return 1;
   }
   const createdAt = new Date().toISOString();
+  const callerReceipt = Object.keys(receipt).length > 0 ? receipt : undefined;
+  const dimensions = {
+    ...session.dimensions,
+    model: session.model,
+    hardware: session.dimensions?.hardware ?? hardware ?? process.env.LH_HARDWARE,
+    caller: session.dimensions?.caller ?? source,
+  };
+  const common = { outcome, notes, source, failureCode, reworkMs, callerReceipt, dimensions, createdAt };
+  const label = outcome === "accepted_as_is" ? "pass" : outcome === "rejected" ? "fail" : outcome;
 
   // --task grades a single task of a batch session with that task's own kind.
   if (taskId !== undefined) {
     const task = session.tasks?.find((t) => t.id === taskId);
     if (!task) {
-      console.error(`unknown task id: ${taskId} in session ${id} (see its tasks with \`lh poll ${id} --json\`)`);
+      const message = `unknown task id: ${taskId} in session ${id} (see its tasks with \`lh poll ${id} --json\`)`;
+      if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+      else console.error(message);
       return 1;
     }
-    appendFeedback({ sessionId: id, taskId, verdict, kind: task.kind, notes, source, createdAt });
-    console.log(`recorded: ${id} --task ${taskId} ${verdict}${notes ? ` — ${notes}` : ""}`);
+    appendFeedback({ sessionId: id, taskId, kind: task.kind, ...common });
+    if (json) console.log(JSON.stringify({ status: "recorded", session_id: id, task_id: taskId, outcome }));
+    else console.log(`recorded: ${id} --task ${taskId} ${label}${notes ? ` — ${notes}` : ""}`);
     return 0;
   }
 
@@ -420,24 +683,35 @@ export function cmdFeedback(argv: string[]): number {
   // own kind, so by-kind stats stay accurate.
   if (session.tasks && session.tasks.length > 0) {
     for (const task of session.tasks) {
-      appendFeedback({ sessionId: id, taskId: task.id, verdict, kind: task.kind, notes, source, createdAt });
+      appendFeedback({ sessionId: id, taskId: task.id, kind: task.kind, ...common });
     }
-    console.log(`recorded: ${id} ${verdict} — fanned out to ${session.tasks.length} tasks${notes ? ` — ${notes}` : ""}`);
+    if (json) console.log(JSON.stringify({ status: "recorded", session_id: id, outcome, tasks: session.tasks.length }));
+    else console.log(`recorded: ${id} ${label} — fanned out to ${session.tasks.length} tasks${notes ? ` — ${notes}` : ""}`);
     return 0;
   }
 
-  appendFeedback({ sessionId: id, verdict, kind: session.kind, notes, source, createdAt });
-  console.log(`recorded: ${id} ${verdict}${notes ? ` — ${notes}` : ""}`);
+  appendFeedback({ sessionId: id, kind: session.kind, ...common });
+  if (json) console.log(JSON.stringify({ status: "recorded", session_id: id, outcome }));
+  else console.log(`recorded: ${id} ${label}${notes ? ` — ${notes}` : ""}`);
   return 0;
 }
 
 function cmdSessions(argv: string[]): number {
   let n = 10;
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === "-n") n = Number(argv[++i]);
+    if (argv[i] !== "-n") {
+      console.error(`error: unknown sessions option: ${argv[i]}`);
+      return 1;
+    }
+    const raw = argv[++i];
+    n = Number(raw);
+    if (raw === undefined || !Number.isInteger(n) || n < 1) {
+      console.error("error: -n requires an integer >= 1");
+      return 1;
+    }
   }
   const verdicts = new Map<string, string>();
-  for (const fb of readFeedback()) verdicts.set(fb.sessionId, fb.verdict);
+  for (const fb of readFeedback()) verdicts.set(fb.sessionId, fb.verdict ?? "");
   const ids = listSessionIds().slice(-n);
   if (ids.length === 0) {
     console.log("no sessions recorded yet");
@@ -456,15 +730,62 @@ function cmdSessions(argv: string[]): number {
   return 0;
 }
 
-function cmdStats(argv: string[]): number {
-  const byKind = argv.includes("--by-kind");
-  const stats = computeStats({ byKind });
-  if (argv.includes("--json")) {
+export function cmdStats(argv: string[]): number {
+  let byKind = false;
+  let json = false;
+  let model: string | undefined;
+  let hardware: string | undefined;
+  let caller: string | undefined;
+  let error: string | undefined;
+  const valueAfter = (index: number, flag: string): string | undefined => {
+    const value = argv[index + 1];
+    if (value === undefined || !value.trim() || value.startsWith("-")) {
+      error = `${flag} requires a value`;
+      return undefined;
+    }
+    return value;
+  };
+  for (let i = 0; i < argv.length && error === undefined; i++) {
+    const flag = argv[i]!;
+    if (flag === "--by-kind") byKind = true;
+    else if (flag === "--json") json = true;
+    else if (flag === "--model" || flag === "--hardware" || flag === "--caller") {
+      const value = valueAfter(i, flag);
+      if (value === undefined) break;
+      if (flag === "--model") model = value;
+      else if (flag === "--hardware") hardware = value;
+      else caller = value;
+      i++;
+    } else {
+      error = `unknown stats option: ${flag}`;
+    }
+  }
+  if (error) {
+    if (json || argv.includes("--json")) console.log(JSON.stringify({ status: "error", error, error_kind: "config" }));
+    else console.error(`error: ${error}`);
+    return 1;
+  }
+  const stats = computeStats({ byKind, model, hardware, caller });
+  if (json) {
     console.log(JSON.stringify(stats));
     return 0;
   }
+  if (stats.filters) {
+    const filterText = Object.entries(stats.filters).map(([key, value]) => `${key}=${value}`).join(", ");
+    console.log(`filters:  ${filterText}`);
+  }
   console.log(`sessions: ${stats.sessions}`);
-  console.log(`graded:   ${stats.graded} (pass ${stats.pass} / fail ${stats.fail}, ${stats.rate ?? 0}% pass)`);
+  console.log(
+    `dimensions: matched ${stats.dimensionCoverage.matched}, unknown ${stats.dimensionCoverage.unknown}, ` +
+      `excluded ${stats.dimensionCoverage.excluded} (${stats.dimensionCoverage.rate ?? 0}% known-match coverage)`,
+  );
+  console.log(
+    `graded:   ${stats.graded}/${stats.gradable} (${stats.coverageRate ?? 0}% coverage; pass ${stats.pass} / fail ${stats.fail}, ` +
+      `${stats.rate ?? 0}% pass, 95% lower bound ${stats.successLowerBound ?? 0}%; rework ${stats.reworkRate ?? 0}%)`,
+  );
+  if (stats.p50DurationMs !== null) {
+    console.log(`duration: p50 ${Math.round(stats.p50DurationMs / 1000)}s / p90 ${Math.round((stats.p90DurationMs ?? 0) / 1000)}s`);
+  }
   if (stats.recentFailures.length > 0) {
     console.log("recent failures:");
     for (const f of stats.recentFailures) {
@@ -475,11 +796,63 @@ function cmdStats(argv: string[]): number {
     console.log("by kind:");
     for (const k of stats.byKind) {
       console.log(
-        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${k.rate ?? 0}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s, gate ${k.gate.status}`,
+        `  ${k.kind.padEnd(12)} ${k.graded}/${k.gradable} graded (${k.coverageRate ?? 0}% coverage, ` +
+          `${k.dimensionCoverage.unknown} dimension-unknown), pass ${k.pass} / fail ${k.fail}, ${k.rate ?? 0}% pass ` +
+          `(lower ${k.successLowerBound ?? 0}%), rework ${k.reworkRate ?? 0}%, p50/p90 ` +
+          `${Math.round(k.p50DurationMs / 1000)}s/${Math.round(k.p90DurationMs / 1000)}s, gate ${k.gate.status}`,
       );
     }
   }
   return 0;
+}
+
+function printAdvice(result: AdviceResult): void {
+  console.log(`route:      ${result.route}`);
+  console.log(`local LLM:  ${result.recommended ? "recommended" : "not recommended"}`);
+  console.log(`confidence: ${Math.round(result.confidence * 100)}%`);
+  console.log(
+    `evidence:   n=${result.sample_size}, lower=${result.estimated_success_lower_bound ?? "n/a"}%, ` +
+      `p50/p90=${result.p50_ms ?? "n/a"}/${result.p90_ms ?? "n/a"}ms, gate=${result.gate.status}`,
+  );
+  console.log(
+    `dimensions: matched=${result.dimension_matched}, unknown=${result.dimension_unknown}, ` +
+      `excluded=${result.dimension_excluded}, coverage=${result.dimension_coverage_rate ?? "n/a"}%`,
+  );
+  for (const reason of result.reasons) console.log(`reason:     ${reason}`);
+}
+
+export function cmdAdvise(argv: string[]): number {
+  const jsonRequested = argv.includes("--json");
+  try {
+    const parsed = parseAdviceArgs(argv);
+    const currentDimensions = runtimeMetricDimensions({
+      model: parsed.input.model ?? defaultConfig.model,
+      hardware: parsed.input.hardware,
+      caller: parsed.input.caller,
+    });
+    const input = {
+      ...parsed.input,
+      model: parsed.input.model ?? defaultConfig.model,
+      hardware: currentDimensions.hardware,
+      caller: currentDimensions.caller,
+    };
+    const stats = computeStats({
+      byKind: true,
+      model: input.model,
+      hardware: input.hardware,
+      caller: input.caller,
+    });
+    const result = advise(input, stats);
+    if (parsed.json) console.log(JSON.stringify(result));
+    else printAdvice(result);
+    return 0;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    const errorKind: ErrorKind = err instanceof AdviceConfigError ? "config" : "internal";
+    if (jsonRequested) console.log(JSON.stringify({ status: "error", error: message, error_kind: errorKind }));
+    else console.error(`error: ${message}`);
+    return 1;
+  }
 }
 
 // ---------- one-shot ----------
@@ -526,11 +899,17 @@ export function taskForJson(task: TaskRecord) {
 /** Batch `--json`: the task-oriented view (distinct from a one-shot session). */
 function batchForJson(record: SessionRecord) {
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
+    error: record.error,
+    error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
+    isolation: record.isolation,
     tasks: (record.tasks ?? []).map(taskForJson),
     tokens: record.tokens,
     feedback_command: `lh feedback ${record.id} --task <id> <pass|fail> --notes "<verified how / what went wrong>"`,
@@ -539,17 +918,21 @@ function batchForJson(record: SessionRecord) {
 
 function sessionForJson(record: SessionRecord) {
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
     result: record.result,
     error: record.error,
     error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     turns: record.turns,
     tool_calls: record.toolCalls,
     tokens: record.tokens,
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
+    isolation: record.isolation,
     kind: record.kind,
     resumed_from: record.resumedFrom,
     pid: record.pid,
@@ -568,7 +951,7 @@ function sessionForJson(record: SessionRecord) {
  */
 function failResume(opts: CliOptions, err: unknown): never {
   const message = err instanceof Error ? err.message : String(err);
-  const errorKind: ErrorKind = err instanceof ResumeError ? err.kind : "internal";
+  const errorKind: ErrorKind = err instanceof ResumeError || err instanceof InvalidSessionIdError ? "config" : "internal";
   if (opts.json) {
     console.log(JSON.stringify({ status: "error", error: message, error_kind: errorKind }));
   } else {
@@ -583,75 +966,277 @@ function statusExitCode(status: RunStatus | BatchStatus): number {
   return 1;
 }
 
+function executionDimensions(opts: CliOptions) {
+  return runtimeMetricDimensions({
+    model: opts.config.model,
+    hardware: opts.hardware,
+    caller: opts.caller,
+    integrationVersion: opts.integrationVersion,
+  });
+}
+
+function rewritePathStrings(value: unknown, from: string, to: string): unknown {
+  if (typeof value === "string") return value.replaceAll(from, to);
+  if (Array.isArray(value)) return value.map((entry) => rewritePathStrings(entry, from, to));
+  if (value && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, rewritePathStrings(entry, from, to)]),
+    );
+  }
+  return value;
+}
+
+function rewriteRestoredIsolationPaths(messages: ChatMessage[], from: string, to: string): ChatMessage[] {
+  return messages.map((message) => ({
+    ...message,
+    content: message.content.replaceAll(from, to),
+    thinking: message.thinking?.replaceAll(from, to),
+    _filePath: message._filePath?.replaceAll(from, to),
+    tool_calls: message.tool_calls?.map((call) => ({
+      ...call,
+      function: {
+        ...call.function,
+        arguments: rewritePathStrings(call.function.arguments, from, to) as Record<string, unknown> | string,
+      },
+    })),
+  }));
+}
+
 async function runOneShot(opts: CliOptions): Promise<never> {
   const { config } = opts;
+  const dimensions = executionDimensions(opts);
+  const started = Date.now();
+  const originalMaxTimeMs = config.maxTimeMs;
+  const deadline = new RunDeadline(originalMaxTimeMs, Date.now, undefined, started);
+  const onSigint = () => {
+    deadline.interrupt();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  process.on("SIGINT", onSigint);
 
   // --resume: restore a saved session's transcript to seed this run. Replay in
   // the original session's cwd (so file paths in the transcript still resolve)
   // unless the caller overrode --cwd.
   let restored: ChatMessage[] | undefined;
   let resumedFrom: string | undefined;
+  let resumedRecord: SessionRecord | undefined;
   let baseCwd = opts.cwd;
   if (opts.resumeFrom !== undefined) {
-    const original = loadSession(opts.resumeFrom);
     try {
-      restored = restoreTranscript(opts.resumeFrom, original);
+      const resumeId = validateSessionId(opts.resumeFrom);
+      const original = loadSession(resumeId);
+      restored = restoreTranscript(resumeId, original);
+      resumedRecord = original ?? undefined;
+      resumedFrom = resumeId;
+      baseCwd = opts.cwd ?? original!.cwd;
     } catch (err) {
       return failResume(opts, err);
     }
-    resumedFrom = opts.resumeFrom;
-    baseCwd = opts.cwd ?? original!.cwd;
   }
-
-  const cwd = path.resolve(baseCwd ?? process.cwd());
+  const logicalCwd = path.resolve(baseCwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
+  let inputStopped = false;
+  if (opts.prompt === "-") {
+    try {
+      opts.prompt = await readStdin(deadline.signal);
+    } catch (err) {
+      if (!deadline.cause) throw err;
+      inputStopped = true;
+      opts.prompt = "";
+    }
+  }
+  if (!opts.inPlace && config.permissionMode === "yolo") {
+    const message = "--yolo cannot be combined with private worktree isolation; add --in-place to accept direct host access";
+    if (opts.json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" }));
+    else process.stderr.write(c.red(`error: ${message}`) + "\n");
+    process.off("SIGINT", onSigint);
+    deadline.dispose();
+    process.exit(1);
+  }
+  let isolationHandle: IsolationHandle | undefined;
+  let isolation: IsolationSessionMetadata = { mode: opts.inPlace ? "in_place" : "worktree", source_cwd: logicalCwd };
+  let cwd = logicalCwd;
+  try {
+    if (!opts.inPlace && !inputStopped) {
+      const previousIsolation = resumedRecord?.isolation;
+      const replayRequired = previousIsolation?.mode === "worktree" &&
+        !["applied", "not_needed"].includes(previousIsolation.apply_status ?? "pending");
+      if (replayRequired && !previousIsolation.patch_path) {
+        throw new IsolationError(
+          `session ${resumedFrom} has unapplied isolated work but no retained patch`,
+          "conflict",
+        );
+      }
+      if (previousIsolation?.mode === "worktree" && !previousIsolation.worktree_path) {
+        throw new IsolationError(`session ${resumedFrom} is missing its private worktree path metadata`, "conflict");
+      }
+      const previousPatch = replayRequired ? previousIsolation.patch_path : undefined;
+      if (previousPatch && !fs.existsSync(previousPatch)) {
+        throw new IsolationError(`resume patch is missing: ${previousPatch}`, "conflict");
+      }
+      if (previousPatch && (!resumedRecord?.isolation?.patch_sha256 || !resumedRecord.isolation.baseline_tree)) {
+        throw new IsolationError("resume patch metadata is incomplete (SHA-256 or baseline tree missing)", "conflict");
+      }
+      if (previousPatch && (
+        !resumedRecord?.isolation?.baseline_fingerprint ||
+        !resumedRecord.isolation.final_content_digest ||
+        resumedRecord.isolation.final_modes === undefined ||
+        !resumedRecord.isolation.final_modes_sha256
+      )) {
+        throw new IsolationError("resume patch metadata is incomplete (fingerprint or final modes missing)", "conflict");
+      }
+      if (previousPatch && resumedRecord?.isolation?.source_cwd) {
+        const previousSource = fs.realpathSync(resumedRecord.isolation.source_cwd);
+        const currentSource = fs.realpathSync(logicalCwd);
+        if (previousSource !== currentSource) {
+          throw new IsolationError(
+            `resume patch belongs to ${previousSource}, not ${currentSource}`,
+            "conflict",
+          );
+        }
+      }
+      isolationHandle = await prepareIsolation({
+        sourceCwd: logicalCwd,
+        sessionId,
+        seedPatchPath: previousPatch,
+        seedPatchSha256: previousPatch ? resumedRecord?.isolation?.patch_sha256 : undefined,
+        seedBaselineTree: previousPatch ? resumedRecord?.isolation?.baseline_tree : undefined,
+        seedBaselineFingerprint: previousPatch ? resumedRecord?.isolation?.baseline_fingerprint : undefined,
+        seedFinalContentDigest: previousPatch ? resumedRecord?.isolation?.final_content_digest : undefined,
+        seedFinalModes: previousPatch ? resumedRecord?.isolation?.final_modes : undefined,
+        seedFinalModesSha256: previousPatch ? resumedRecord?.isolation?.final_modes_sha256 : undefined,
+      });
+      cwd = isolationHandle.executionCwd;
+      isolation = isolationMetadata(isolationHandle);
+      if (restored && restored.length > 0) {
+        const previousRoot = resumedRecord?.isolation?.worktree_path;
+        restored = previousRoot
+          ? rewriteRestoredIsolationPaths(restored, previousRoot, isolationHandle.worktreeRoot)
+          : rewriteRestoredIsolationPaths(restored, resumedRecord?.cwd ?? logicalCwd, cwd);
+        restored = restored.map((message, index) => index === 0 && message.role === "system"
+          ? { ...message, content: buildSystemPrompt(cwd, config) }
+          : message);
+      }
+    }
+  } catch (err) {
+    const message = `worktree isolation failed: ${err instanceof Error ? err.message : String(err)}`;
+    if (opts.json) console.log(JSON.stringify({ status: "error", error: message, error_kind: err instanceof IsolationError && err.code === "conflict" ? "conflict" : "config" }));
+    else process.stderr.write(c.red(`error: ${message}`) + "\n");
+    process.off("SIGINT", onSigint);
+    deadline.dispose();
+    process.exit(1);
+  }
+  let scope: WorkspaceScope;
+  try {
+    const allowedPaths = isolationHandle ? opts.allowedPaths.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : opts.allowedPaths;
+    const protectedPaths = isolationHandle ? opts.protectedPaths.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : opts.protectedPaths;
+    scope = prepareWorkspaceScope(cwd, { allowedPaths, protectedPaths });
+    if (isolationHandle) {
+      scope.privateGitPaths = [isolationHandle.gitDir, path.join(isolationHandle.worktreeRoot, ".git")];
+    }
+  } catch (err) {
+    const message = `invalid workspace scope: ${err instanceof Error ? err.message : String(err)}`;
+    if (isolationHandle) await cleanupIsolation(isolationHandle);
+    if (opts.json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    else process.stderr.write(c.red(`error: ${message}`) + "\n");
+    process.exit(1);
+  }
   const checkRetries = Number.isFinite(opts.checkRetries) && opts.checkRetries >= 0 ? Math.floor(opts.checkRetries) : 2;
-  const originalMaxTimeMs = config.maxTimeMs;
-  // One-shot can't prompt for permission: default to yolo unless the caller
-  // chose --auto (then dangerous bash is denied instead of asked).
-  if (!opts.permissionModeSet) config.permissionMode = "yolo";
+  // One-shot cannot prompt, so its implicit mode must be the mechanically
+  // constrained one. Unrestricted host execution requires explicit --yolo.
+  if (!opts.permissionModeSet) config.permissionMode = "auto";
   const denyPermission = async () => false;
+
+  if (!inputStopped && (opts.prompt === undefined || !opts.prompt.trim())) {
+    if (isolationHandle) await cleanupIsolation(isolationHandle);
+    process.off("SIGINT", onSigint);
+    deadline.dispose();
+    if (opts.json) console.log(JSON.stringify({ status: "error", error: "empty prompt", error_kind: "config" }));
+    else process.stderr.write(c.red("error: empty prompt") + "\n");
+    process.exit(1);
+  }
 
   const showProgress = opts.json ? opts.verbose : !opts.quiet;
   const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
   let turns = 0;
   let toolCalls = 0;
-  let promptTokens = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
   let completionTokens = 0;
+  let modelMs = 0;
+  let toolMs = 0;
+  let checkMs = 0;
+  let ttftMs: number | undefined;
   const onEvent = (e: AgentEvent) => {
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
-      promptTokens = e.promptTokens;
+      promptLastTokens = e.promptTokens;
+      promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
+    } else if (e.type === "timing") {
+      if (e.phase === "model") {
+        modelMs += e.durationMs;
+        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
+      } else {
+        toolMs += e.durationMs;
+      }
     }
     progress?.(e);
   };
 
-  const agent = new Agent(config, cwd, onEvent, denyPermission);
+  let beforeSnapshot: Awaited<ReturnType<typeof captureWorkspaceSnapshot>> | undefined;
+  if (!deadline.signal.aborted) {
+    try {
+      beforeSnapshot = await captureWorkspaceSnapshot(cwd, deadline.signal);
+    } catch (snapshotErr) {
+      if (!deadline.cause) {
+        const message = `workspace change audit failed before run: ${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}`;
+        if (isolationHandle) await cleanupIsolation(isolationHandle);
+        if (opts.json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "internal" satisfies ErrorKind }));
+        else process.stderr.write(c.red(`error: ${message}`) + "\n");
+        process.off("SIGINT", onSigint);
+        deadline.dispose();
+        process.exit(1);
+      }
+      inputStopped = true;
+    }
+  }
+  const agent = new Agent(config, cwd, onEvent, denyPermission, undefined, undefined, undefined, scope, deadline);
   if (restored) agent.restore(restored);
-  process.on("SIGINT", () => {
-    agent.interrupt();
-    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
-  });
 
-  const started = Date.now();
   let result = "";
   let status: RunStatus = "error";
   let error: string | undefined;
   let errorKind: ErrorKind | undefined;
   let check: CheckRecord | undefined;
+  let report: RunReport = { changedFiles: [], commandsRun: [] };
   try {
-    result = await agent.run(opts.prompt!);
-    status = agent.lastRunStatus;
+    if (inputStopped || deadline.signal.aborted) {
+      status = deadline.timedOut ? "timeout" : "interrupted";
+      result = status === "timeout" ? "[stopped: reached time budget]" : "[interrupted]";
+    } else {
+      result = await agent.run(opts.prompt!);
+      status = agent.lastRunStatus;
+    }
     if (opts.checkCommand && status === "ok") {
       for (let attempt = 1; ; attempt++) {
+        const checkStarted = Date.now();
         check = await runCheckCommand({
           command: opts.checkCommand,
           cwd,
           timeoutMs: config.bashTimeoutMs,
           attempts: attempt,
+          signal: deadline.signal,
+          deadlineAt: deadline.deadlineAt,
+          sandbox: config.permissionMode !== "yolo",
+          scope,
         });
+        checkMs += Date.now() - checkStarted;
+        if (deadline.cause) {
+          status = deadline.timedOut ? "timeout" : "interrupted";
+          break;
+        }
         if (check.exit_code === 0) break;
         if (
           !canRetryCheck({
@@ -664,9 +1249,6 @@ async function runOneShot(opts: CliOptions): Promise<never> {
           status = "check_failed";
           break;
         }
-        if (originalMaxTimeMs > 0) {
-          config.maxTimeMs = Math.max(1, originalMaxTimeMs - (Date.now() - started));
-        }
         result = await agent.run(buildCheckRepairPrompt(check));
         status = agent.lastRunStatus;
         if (status !== "ok") break;
@@ -674,29 +1256,134 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     }
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    errorKind = classifyError(error);
+    if (deadline.cause) {
+      status = deadline.timedOut ? "timeout" : "interrupted";
+      error = undefined;
+      errorKind = undefined;
+    } else {
+      errorKind = classifyError(error);
+    }
   }
+  try {
+    if (!beforeSnapshot) throw deadline.signal.reason ?? new Error("before snapshot unavailable");
+    const afterSnapshot = await captureWorkspaceSnapshot(cwd, deadline.signal);
+    report = reportFromSnapshots(beforeSnapshot, afterSnapshot, agent.getReport());
+    if (deadline.cause) {
+      status = deadline.timedOut ? "timeout" : "interrupted";
+      error = undefined;
+      errorKind = undefined;
+    }
+    const violations = changedFileScopeViolations(scope, report);
+    if (violations.length > 0) {
+      if (status !== "timeout" && status !== "interrupted") {
+        status = "error";
+        errorKind = "config";
+        error = `workspace scope violation: ${violations.join("; ")}`;
+      }
+    }
+  } catch (snapshotErr) {
+    report = agent.getReport();
+    if (deadline.cause) {
+      status = deadline.timedOut ? "timeout" : "interrupted";
+      error = undefined;
+      errorKind = undefined;
+    } else if (status !== "timeout" && status !== "interrupted") {
+      status = "error";
+      errorKind = "internal";
+      error = `workspace change audit failed: ${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}`;
+    }
+  }
+  if (deadline.cause) {
+    status = deadline.timedOut ? "timeout" : "interrupted";
+    error = undefined;
+    errorKind = undefined;
+  }
+  // Stop the wall-clock timer, but keep the SIGINT handler installed through
+  // isolation finalization/apply/cleanup. Otherwise Node's default SIGINT
+  // action can terminate the process in the middle of a parent mutation.
+  deadline.dispose();
+  if (isolationHandle) {
+    try {
+      const artifact = await finalizeIsolation(isolationHandle, { timeoutMs: 30_000 });
+      if (deadline.cause) {
+        status = deadline.timedOut ? "timeout" : "interrupted";
+        error = undefined;
+        errorKind = undefined;
+      }
+      const prefix = isolationHandle.cwdRelative.split(path.sep).join("/");
+      const outside = artifact.changedRepoPaths.filter((repoPath) => {
+        if (!prefix) return false;
+        const rel = path.posix.relative(prefix, repoPath);
+        return rel === ".." || rel.startsWith("../") || path.posix.isAbsolute(rel);
+      });
+      if (outside.length > 0 && status !== "timeout" && status !== "interrupted") {
+        status = "error";
+        errorKind = "config";
+        error = `workspace scope violation outside cwd: ${outside.join(", ")}`;
+      }
+      if (status === "ok") {
+        const applied = await applyArtifact(isolationHandle, artifact, { signal: deadline.signal });
+        if (deadline.cause) {
+          status = deadline.timedOut ? "timeout" : "interrupted";
+          error = undefined;
+          errorKind = undefined;
+        } else if (applied !== "applied") {
+          status = "error";
+          errorKind = applied === "conflict" ? "conflict" : "internal";
+          error = artifact.conflict ?? `isolated patch ${applied}`;
+        }
+      } else if (artifact.applyStatus === "pending") {
+        artifact.applyStatus = "retained";
+      }
+      await cleanupIsolation(isolationHandle, artifact);
+      isolation = isolationMetadata(artifact);
+      if (deadline.cause) {
+        status = deadline.timedOut ? "timeout" : "interrupted";
+        error = undefined;
+        errorKind = undefined;
+      }
+    } catch (finalizeErr) {
+      // spawnSync Git can return before Node dispatches a queued OS SIGINT.
+      // Keep the listener installed for one event-loop turn before classifying.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      isolation = { ...isolationMetadata(isolationHandle), cleanup_status: "retained", worktree_path: isolationHandle.worktreeRoot };
+      if (deadline.cause) {
+        status = deadline.timedOut ? "timeout" : "interrupted";
+        error = undefined;
+        errorKind = undefined;
+      } else if (status !== "timeout" && status !== "interrupted") {
+        status = "error";
+        errorKind = "internal";
+        error = `isolation finalization failed; worktree retained at ${isolationHandle.worktreeRoot}: ${finalizeErr instanceof Error ? finalizeErr.message : String(finalizeErr)}`;
+      }
+    }
+  }
+  process.off("SIGINT", onSigint);
+  deadline.dispose();
   const durationMs = Date.now() - started;
 
   const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date(started).toISOString(),
-    cwd,
+    cwd: logicalCwd,
     model: config.model,
-    prompt: opts.prompt!,
+    dimensions,
+    prompt: opts.prompt ?? "",
     kind: opts.kind,
     status,
     result,
     error,
     errorKind,
     durationMs,
+    durations: { total_ms: durationMs, model_ms: modelMs, tool_ms: toolMs, check_ms: checkMs, ttft_ms: ttftMs },
     turns,
     toolCalls,
-    tokens: { prompt: promptTokens, completion: completionTokens },
+    tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
     check,
-    report: agent.getReport(),
+    report,
     messages: agent.getMessages(),
     resumedFrom,
+    isolation,
   };
   saveSession(record);
 
@@ -722,6 +1409,14 @@ function emitBatchConfigError(json: boolean, message: string): number {
   if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
   else process.stderr.write(c.red(`error: ${message}`) + "\n");
   return 1;
+}
+
+function emitBatchStopped(json: boolean, deadline: RunDeadline): number {
+  const status: RunStatus = deadline.timedOut ? "timeout" : "interrupted";
+  const message = status === "timeout" ? "batch time budget reached while reading input" : "batch interrupted";
+  if (json) console.log(JSON.stringify({ status, error: message }));
+  else process.stderr.write(c.yellow(message) + "\n");
+  return statusExitCode(status);
 }
 
 function summarizeTasks(executions: TaskExecution[]): string {
@@ -773,22 +1468,44 @@ function printBatchSummary(record: SessionRecord, executions: TaskExecution[]): 
  * passes nothing and gets the real wiring.
  */
 export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number> {
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return emitBatchConfigError(argv.includes("--json"), err instanceof Error ? err.message : String(err));
+  }
   const json = opts.json;
+  const dimensions = executionDimensions(opts);
+  const now = deps?.now ?? Date.now;
+  const started = now();
 
   // Batch is synchronous and self-contained: no detached/resume variants (v1).
   if (opts.resumeFrom !== undefined) {
     return emitBatchConfigError(json, "batch does not support --resume (a batch session cannot be resumed in v1)");
   }
   if (!opts.tasksFile) {
-    console.error("usage: lh batch --tasks <file|-> [--cwd DIR] [--json] [--auto|--yolo] [--max-time SEC] [--quiet] [-v]");
-    return 1;
+    return emitBatchConfigError(json, "batch requires --tasks <file|->");
   }
+
+  // Start the budget before manifest/stdin acquisition. A default per-task
+  // budget is used as the provisional input-acquisition cap; after the task
+  // count is known we expand the same deadline to the total batch budget while
+  // retaining `started` as the epoch.
+  const deadline = new RunDeadline(opts.config.maxTimeMs, now, undefined, started);
 
   let manifestText: string;
   try {
-    manifestText = opts.tasksFile === "-" ? await readStdin() : fs.readFileSync(path.resolve(opts.tasksFile), "utf8");
+    manifestText = opts.tasksFile === "-"
+      ? await readStdin(deadline.signal)
+      : fs.readFileSync(path.resolve(opts.tasksFile), "utf8");
+    deadline.remainingMs();
   } catch (err) {
+    if (deadline.cause) {
+      const code = emitBatchStopped(json, deadline);
+      deadline.dispose();
+      return code;
+    }
+    deadline.dispose();
     return emitBatchConfigError(json, `cannot read manifest: ${err instanceof Error ? err.message : String(err)}`);
   }
 
@@ -796,14 +1513,61 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   try {
     tasks = parseManifest(manifestText);
   } catch (err) {
-    if (err instanceof BatchConfigError) return emitBatchConfigError(json, err.message);
+    if (err instanceof BatchConfigError) {
+      deadline.dispose();
+      return emitBatchConfigError(json, err.message);
+    }
+    deadline.dispose();
     throw err;
   }
 
   const { config } = opts;
-  if (!opts.permissionModeSet) config.permissionMode = "yolo";
-  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  if (!opts.permissionModeSet) config.permissionMode = "auto";
+  const logicalCwd = path.resolve(opts.cwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
+  const useIsolation = !opts.inPlace;
+  if (useIsolation && config.permissionMode === "yolo") {
+    deadline.dispose();
+    return emitBatchConfigError(json, "--yolo cannot be combined with private worktree isolation; add --in-place");
+  }
+  let isolationHandle: IsolationHandle | undefined;
+  let isolation: IsolationSessionMetadata = { mode: useIsolation ? "worktree" : "in_place", source_cwd: logicalCwd };
+  let cwd = logicalCwd;
+  if (useIsolation) {
+    try {
+      isolationHandle = await prepareIsolation({ sourceCwd: logicalCwd, sessionId });
+      cwd = isolationHandle.executionCwd;
+      isolation = isolationMetadata(isolationHandle);
+    } catch (err) {
+      deadline.dispose();
+      return emitBatchConfigError(json, `worktree isolation failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+  let cliScope: WorkspaceScope;
+  const taskScopes = new Map<string, WorkspaceScope>();
+  try {
+    const cliAllowed = isolationHandle ? opts.allowedPaths.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : opts.allowedPaths;
+    const cliProtected = isolationHandle ? opts.protectedPaths.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : opts.protectedPaths;
+    cliScope = prepareWorkspaceScope(cwd, { allowedPaths: cliAllowed, protectedPaths: cliProtected });
+    if (isolationHandle) {
+      cliScope.privateGitPaths = [isolationHandle.gitDir, path.join(isolationHandle.worktreeRoot, ".git")];
+    }
+    for (const task of tasks) {
+      if (task.allowedPaths || task.protectedPaths) {
+        const manifestScope = prepareWorkspaceScope(cwd, {
+          allowedPaths: isolationHandle ? task.allowedPaths?.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : task.allowedPaths,
+          protectedPaths: isolationHandle ? task.protectedPaths?.map((value) => mapIsolationPath(logicalCwd, cwd, value)) : task.protectedPaths,
+        });
+        taskScopes.set(task.id, intersectWorkspaceScopes(cliScope, manifestScope));
+      } else {
+        taskScopes.set(task.id, cliScope);
+      }
+    }
+  } catch (err) {
+    if (isolationHandle) await cleanupIsolation(isolationHandle);
+    deadline.dispose();
+    return emitBatchConfigError(json, `invalid workspace scope: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const denyPermission = async () => false;
   // --max-time is the TOTAL wall-clock budget for the whole batch (all tasks +
   // checks + the final sweep), not per task. When it is not set explicitly, fall
@@ -811,19 +1575,33 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   // allowance (the default is 0 = unlimited, which stays unlimited).
   const totalBudgetMs = opts.maxTimeSet ? config.maxTimeMs : config.maxTimeMs * tasks.length;
   const budgetActive = totalBudgetMs > 0;
+  if (!opts.maxTimeSet) deadline.configure(totalBudgetMs, started);
 
   const showProgress = json ? opts.verbose : !opts.quiet;
   const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
   let turns = 0;
   let toolCalls = 0;
-  let promptTokens = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
   let completionTokens = 0;
+  let modelMs = 0;
+  let toolMs = 0;
+  let checkMs = 0;
+  let ttftMs: number | undefined;
   const onEvent = (e: AgentEvent) => {
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
-      promptTokens = e.promptTokens;
+      promptLastTokens = e.promptTokens;
+      promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
+    } else if (e.type === "timing") {
+      if (e.phase === "model") {
+        modelMs += e.durationMs;
+        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
+      } else {
+        toolMs += e.durationMs;
+      }
     }
     progress?.(e);
   };
@@ -834,30 +1612,43 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   // so the system prefix stays byte-identical and Ollama's prefix KV cache holds.
   const systemPrompt = buildSystemPrompt(cwd, config);
 
-  // Real wiring: fresh Agent per task, the shared-config budget knob, the shell
+  // Real wiring: fresh Agent per task, one command-scoped deadline, the shell
   // check runner, and the system clock. Tests inject fakes via `deps`.
   const d: BatchDeps = deps ?? {
-    now: () => Date.now(),
-    createAgent: (sp) => new Agent(config, cwd, onEvent, denyPermission, sp),
+    now,
+    createAgent: (sp, _task, scope) => new Agent(config, cwd, onEvent, denyPermission, sp, undefined, undefined, scope, deadline),
     applyBudget: (ms) => {
       config.maxTimeMs = ms;
     },
-    runCheck: (command, timeoutMs, attempts) => runCheckCommand({ command, cwd, timeoutMs, attempts }),
+    runCheck: (command, timeoutMs, attempts, signal, deadlineAt, scope) =>
+      runCheckCommand({
+        command,
+        cwd,
+        timeoutMs,
+        attempts,
+        signal,
+        deadlineAt,
+        sandbox: config.permissionMode !== "yolo",
+        scope,
+      }),
   };
 
   // The SIGINT handler must interrupt whichever fresh agent is currently running.
   // Registered only in production (an injected deps means a test — avoid leaking
   // process listeners across test runs).
   let currentAgent: BatchAgent | undefined;
+  let sigintReceived = false;
+  const onSigint = () => {
+    sigintReceived = true;
+    deadline.interrupt();
+    currentAgent?.interrupt();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
   if (deps === undefined) {
-    process.on("SIGINT", () => {
-      currentAgent?.interrupt();
-      process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
-    });
+    process.on("SIGINT", onSigint);
   }
 
-  const started = d.now();
-  const remainingMs = () => totalBudgetMs - (d.now() - started);
+  const remainingMs = () => budgetActive ? deadline.remainingMs() : Number.POSITIVE_INFINITY;
 
   // Run one task in a FRESH agent context (the shared system prompt + this
   // task's prompt only). Tasks are independent by contract, and a 27B model
@@ -869,21 +1660,45 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
     if (budgetActive && remainingMs() <= 0) return notRun(task); // total budget spent
     const taskStarted = d.now();
     const turnsBefore = turns;
-    const agent = d.createAgent(systemPrompt);
+    const scope = taskScopes.get(task.id)!;
+    let beforeSnapshot: Awaited<ReturnType<typeof captureWorkspaceSnapshot>>;
+    try {
+      beforeSnapshot = await captureWorkspaceSnapshot(cwd, deadline.signal);
+    } catch (err) {
+      const stopped = deadline.cause;
+      return {
+        task,
+        status: stopped ? (deadline.timedOut ? "timeout" : "interrupted") : "error",
+        error: stopped ? undefined : `workspace change audit failed before task: ${err instanceof Error ? err.message : String(err)}`,
+        errorKind: stopped ? undefined : "internal",
+        report: { changedFiles: [], commandsRun: [] },
+        turns: 0,
+        durationMs: d.now() - taskStarted,
+      };
+    }
+    const agent = d.createAgent(systemPrompt, task, scope);
     currentAgent = agent;
     const checkRetries = task.checkRetries ?? 2;
     let status: RunStatus = "error";
     let error: string | undefined;
     let errorKind: ErrorKind | undefined;
     let check: CheckRecord | undefined;
+    let report: RunReport = { changedFiles: [], commandsRun: [] };
     try {
       d.applyBudget(budgetActive ? Math.max(1, remainingMs()) : 0);
       await agent.run(task.prompt);
       status = agent.lastRunStatus;
+      if (deadline.cause) status = deadline.timedOut ? "timeout" : "interrupted";
       if (task.check && status === "ok") {
         for (let attempt = 1; ; attempt++) {
           const timeoutMs = budgetActive ? Math.max(1, Math.min(config.bashTimeoutMs, remainingMs())) : config.bashTimeoutMs;
-          check = await d.runCheck(task.check, timeoutMs, attempt);
+          const checkStarted = d.now();
+          check = await d.runCheck(task.check, timeoutMs, attempt, deadline.signal, deadline.deadlineAt, scope);
+          checkMs += d.now() - checkStarted;
+          if (deadline.cause) {
+            status = deadline.timedOut ? "timeout" : "interrupted";
+            break;
+          }
           if (check.exit_code === 0) break;
           if (!canRetryCheck({ attempts: attempt, maxRetries: checkRetries, startedAtMs: started, maxTimeMs: totalBudgetMs })) {
             status = "check_failed";
@@ -897,8 +1712,37 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       }
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
-      errorKind = classifyError(error);
-      status = "error";
+      status = deadline.cause ? (deadline.timedOut ? "timeout" : "interrupted") : "error";
+      errorKind = deadline.cause ? undefined : classifyError(error);
+      if (deadline.cause) error = undefined;
+    }
+    try {
+      const afterSnapshot = await captureWorkspaceSnapshot(cwd, deadline.signal);
+      report = reportFromSnapshots(beforeSnapshot, afterSnapshot, agent.getReport());
+      const violations = changedFileScopeViolations(scope, report);
+      if (violations.length > 0) {
+        if (status !== "timeout" && status !== "interrupted") {
+          status = "error";
+          errorKind = "config";
+          error = `workspace scope violation: ${violations.join("; ")}`;
+        }
+      }
+    } catch (snapshotErr) {
+      report = agent.getReport();
+      if (deadline.cause) {
+        status = deadline.timedOut ? "timeout" : "interrupted";
+        error = undefined;
+        errorKind = undefined;
+      } else if (status !== "timeout" && status !== "interrupted") {
+        status = "error";
+        errorKind = "internal";
+        error = `workspace change audit failed after task: ${snapshotErr instanceof Error ? snapshotErr.message : String(snapshotErr)}`;
+      }
+    }
+    if (deadline.cause) {
+      status = deadline.timedOut ? "timeout" : "interrupted";
+      error = undefined;
+      errorKind = undefined;
     }
     return {
       task,
@@ -906,7 +1750,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       error,
       errorKind,
       check,
-      report: agent.getReport(),
+      report,
       turns: turns - turnsBefore,
       durationMs: d.now() - taskStarted,
       messages: agent.getMessages(),
@@ -920,48 +1764,185 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
     return {
       id: sessionId,
       createdAt: new Date(started).toISOString(),
-      cwd,
+      cwd: logicalCwd,
       model: config.model,
+      dimensions,
       prompt: `batch: ${tasks.map((t) => t.id).join(", ")}`,
       status,
       result: summarizeTasks(execs),
       error: errored?.error,
       errorKind: errored?.errorKind,
       durationMs: d.now() - started,
+      durations: {
+        total_ms: d.now() - started,
+        model_ms: modelMs,
+        tool_ms: toolMs,
+        check_ms: checkMs,
+        ttft_ms: ttftMs,
+      },
       turns,
       toolCalls,
-      tokens: { prompt: promptTokens, completion: completionTokens },
+      tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
       report: mergeReports(execs.map((e) => e.report)),
       messages: execs.flatMap((e) => (e.messages ? [...e.messages] : [])),
       tasks: toTaskRecords(execs),
+      isolation,
     };
   };
 
-  // Persist a running placeholder up front, then after every task, so a
-  // mid-batch SIGTERM still leaves the completed tasks on disk.
-  saveSession(buildRecord("running", []));
-  const batch = await executeBatch(tasks, runTask, (execs) => saveSession(buildRecord("running", execs)));
+  try {
+    // Persist a running placeholder up front, then after every task, so a
+    // mid-batch SIGTERM still leaves the completed tasks on disk.
+    saveSession(buildRecord("running", []));
+    const batch = await executeBatch(tasks, runTask, (execs) => saveSession(buildRecord("running", execs)));
 
-  // Final re-verification sweep re-runs each passed check once, catching an
-  // earlier task's work being clobbered by a later one (bash/git side effects
-  // never show up in changed_files, so this is the only signal for it). It is
-  // lightweight (shell only), so it runs even when the budget is spent, using
-  // the full bash timeout rather than the (possibly zero) remaining budget.
-  const recheck = (task: BatchTask) => d.runCheck(task.check!, config.bashTimeoutMs, 1);
-  const { executions, status } = await reverifyBatch(batch.executions, batch.fatal, recheck);
+    // Final re-verification catches an earlier task being clobbered by a later
+    // one. It consumes the same total deadline; an exhausted budget produces a
+    // timed-out record without spawning another process.
+    const sweepReports = new Map<string, RunReport>();
+    const recheck = async (task: BatchTask) => {
+      const checkStarted = d.now();
+      const taskScope = taskScopes.get(task.id)!;
+      let before: Awaited<ReturnType<typeof captureWorkspaceSnapshot>> | undefined;
+      try {
+        if (!deadline.signal.aborted) before = await captureWorkspaceSnapshot(cwd, deadline.signal);
+      } catch (err) {
+        if (!deadline.cause) {
+          return {
+            command: task.check!,
+            exit_code: null,
+            attempts: 1,
+            output_tail: `final check audit failed before execution: ${err instanceof Error ? err.message : String(err)}`,
+          };
+        }
+      }
+      try {
+        let checked = await d.runCheck(
+          task.check!,
+          budgetActive ? Math.max(0, Math.min(config.bashTimeoutMs, remainingMs())) : config.bashTimeoutMs,
+          1,
+          deadline.signal,
+          deadline.deadlineAt,
+          taskScope,
+        );
+        if (before && !deadline.signal.aborted) {
+          try {
+            const after = await captureWorkspaceSnapshot(cwd, deadline.signal);
+            const sweepReport = reportFromSnapshots(before, after, { changedFiles: [], commandsRun: [] });
+            sweepReports.set(task.id, sweepReport);
+            const violations = changedFileScopeViolations(taskScope, sweepReport);
+            if (sweepReport.changedFiles.length > 0) {
+              const paths = sweepReport.changedFiles.map((entry) => entry.path).join(", ");
+              checked = {
+                ...checked,
+                exit_code: null,
+                output_tail: `${checked.output_tail}\nfinal check modified the workspace: ${paths}` +
+                  (violations.length > 0 ? `\nscope violation: ${violations.join("; ")}` : ""),
+              };
+            }
+          } catch (err) {
+            if (!deadline.cause) {
+              checked = {
+                ...checked,
+                exit_code: null,
+                output_tail: `${checked.output_tail}\nfinal check audit failed: ${err instanceof Error ? err.message : String(err)}`,
+              };
+            }
+          }
+        }
+        return checked;
+      } finally {
+        checkMs += d.now() - checkStarted;
+      }
+    };
+    const verified = await reverifyBatch(batch.executions, batch.fatal, recheck);
+    const executions = verified.executions.map((execution) => {
+      const sweep = sweepReports.get(execution.task.id);
+      return sweep ? { ...execution, report: mergeReports([execution.report, sweep]) } : execution;
+    });
+    const status = verified.status;
 
-  const record = buildRecord(status, executions);
-  saveSession(record);
+    const stopCause = deadline.cause;
+    let finalStatus: RunStatus | BatchStatus = stopCause === "timeout"
+      ? "timeout"
+      : stopCause === "interrupted"
+        ? "interrupted"
+        : status;
+    let isolationError: string | undefined;
+    let isolationErrorKind: ErrorKind | undefined;
+    deadline.dispose();
+    if (isolationHandle) {
+      try {
+        const artifact = await finalizeIsolation(isolationHandle, { timeoutMs: 30_000 });
+        const prefix = isolationHandle.cwdRelative.split(path.sep).join("/");
+        const outside = artifact.changedRepoPaths.filter((repoPath) => {
+          if (!prefix) return false;
+          const rel = path.posix.relative(prefix, repoPath);
+          return rel === ".." || rel.startsWith("../") || path.posix.isAbsolute(rel);
+        });
+        if (outside.length > 0) {
+          finalStatus = "error";
+          isolationErrorKind = "config";
+          isolationError = `workspace scope violation outside cwd: ${outside.join(", ")}`;
+        }
+        if (sigintReceived || deadline.interrupted) finalStatus = "interrupted";
+        if (finalStatus === "ok") {
+          const applied = await applyArtifact(isolationHandle, artifact, { signal: deadline.signal });
+          if (sigintReceived || deadline.interrupted) {
+            finalStatus = "interrupted";
+            isolationError = undefined;
+            isolationErrorKind = undefined;
+          } else if (applied !== "applied") {
+            finalStatus = "error";
+            isolationErrorKind = applied === "conflict" ? "conflict" : "internal";
+            isolationError = artifact.conflict ?? `isolated patch ${applied}`;
+          }
+        } else if (artifact.applyStatus === "pending") {
+          artifact.applyStatus = "retained";
+        }
+        await cleanupIsolation(isolationHandle, artifact);
+        isolation = isolationMetadata(artifact);
+        if (sigintReceived || deadline.interrupted) {
+          finalStatus = "interrupted";
+          isolationError = undefined;
+          isolationErrorKind = undefined;
+        }
+      } catch (err) {
+        // Let a SIGINT queued while synchronous Git was running reach onSigint
+        // before the finally block removes the process listener.
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        isolation = { ...isolationMetadata(isolationHandle), cleanup_status: "retained", worktree_path: isolationHandle.worktreeRoot };
+        if (sigintReceived || deadline.interrupted) {
+          finalStatus = "interrupted";
+          isolationError = undefined;
+          isolationErrorKind = undefined;
+        } else if (finalStatus === "ok") {
+          finalStatus = "error";
+          isolationErrorKind = "internal";
+          isolationError = `isolation finalization failed; worktree retained at ${isolationHandle.worktreeRoot}: ${err instanceof Error ? err.message : String(err)}`;
+        }
+      }
+    }
+    const record = buildRecord(finalStatus, executions);
+    if (isolationError) {
+      record.error = isolationError;
+      record.errorKind = isolationErrorKind;
+    }
+    saveSession(record);
 
-  if (json) console.log(JSON.stringify(batchForJson(record)));
-  else printBatchSummary(record, executions);
-  return statusExitCode(status);
+    if (json) console.log(JSON.stringify(batchForJson(record)));
+    else printBatchSummary(record, executions);
+    return statusExitCode(finalStatus);
+  } finally {
+    if (deps === undefined) process.off("SIGINT", onSigint);
+    deadline.dispose();
+  }
 }
 
 // ---------- distill ----------
 
 export interface DistillCliDeps {
-  readFileBuffer?: (file: string) => Buffer;
+  readFileBuffer?: (file: string, signal?: AbortSignal) => Buffer | Promise<Buffer>;
   readStdin?: () => Promise<string>;
   complete?: (messages: ChatMessage[], options: ChatRequestOptions) => Promise<DistillCompleteResult>;
   now?: () => number;
@@ -975,6 +1956,7 @@ function emitDistillConfigError(json: boolean, message: string, warnings: string
 
 function distillForJson(record: SessionRecord, warnings: string[] = []) {
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
     digest: record.result ? JSON.parse(record.result) : undefined,
@@ -982,9 +1964,11 @@ function distillForJson(record: SessionRecord, warnings: string[] = []) {
     error: record.error,
     error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     turns: record.turns,
     tokens: record.tokens,
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
     kind: record.kind,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<digest useful? cited ranges verified?>"`,
@@ -997,12 +1981,18 @@ function displayPath(cwd: string, file: string): string {
   return rel && !rel.startsWith("..") ? rel : abs;
 }
 
-function loadDistillFile(cwd: string, file: string, readFileBuffer: (file: string) => Buffer): DistillInput | string {
+async function loadDistillFile(
+  cwd: string,
+  file: string,
+  readFileBuffer: (file: string, signal?: AbortSignal) => Buffer | Promise<Buffer>,
+  signal?: AbortSignal,
+): Promise<DistillInput | string> {
   const abs = path.resolve(cwd, file);
   const label = displayPath(cwd, file);
   let buf: Buffer;
   try {
-    buf = readFileBuffer(abs);
+    const pending = Promise.resolve(readFileBuffer(abs, signal));
+    buf = signal ? await abortable(pending, signal) : await pending;
   } catch (err) {
     return `cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`;
   }
@@ -1024,8 +2014,14 @@ function stdinHasData(): boolean {
 }
 
 export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Promise<number> {
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return emitDistillConfigError(argv.includes("--json"), err instanceof Error ? err.message : String(err));
+  }
   const json = opts.json;
+  const dimensions = executionDimensions(opts);
   const query = opts.distillQuery;
   if (opts.resumeFrom !== undefined) return emitDistillConfigError(json, "distill does not support --resume");
   if (!query || !query.trim()) return emitDistillConfigError(json, "distill requires -q/--query");
@@ -1036,74 +2032,86 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
 
   const { config } = opts;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
-  const readFileBuffer = deps.readFileBuffer ?? ((file: string) => fs.readFileSync(file));
+  const readFileBuffer = deps.readFileBuffer ?? ((file: string, signal?: AbortSignal) => fs.promises.readFile(file, { signal }));
   const readPipe = deps.readStdin ?? readStdinRaw;
+  const sessionId = opts.sessionId ?? newSessionId();
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const deadline = new RunDeadline(config.maxTimeMs, now, undefined, started);
+  const onSigint = () => {
+    deadline.interrupt();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  if (deps.complete === undefined) process.on("SIGINT", onSigint);
   const inputs: DistillInput[] = [];
   const warnings: string[] = [];
+  let acquisitionError: unknown;
 
-  for (const file of opts.positionals) {
-    const loaded = loadDistillFile(cwd, file, readFileBuffer);
-    if (typeof loaded === "string") warnings.push(loaded);
-    else inputs.push(loaded);
-  }
+  try {
+    for (const file of opts.positionals) {
+      const loaded = await loadDistillFile(cwd, file, readFileBuffer, deadline.signal);
+      if (typeof loaded === "string") warnings.push(loaded);
+      else inputs.push(loaded);
+      if (deadline.remainingMs() === 0) throw deadline.signal.reason;
+    }
 
-  const shouldReadStdin = deps.readStdin !== undefined || stdinHasData();
-  if (shouldReadStdin) {
-    const stdin = await readPipe();
-    if (stdin.length > 0) inputs.push({ file: "(stdin)", text: stdin });
+    const shouldReadStdin = deps.readStdin !== undefined || stdinHasData();
+    if (shouldReadStdin) {
+      const stdin = deps.readStdin
+        ? await abortable(readPipe(), deadline.signal)
+        : await readStdinRaw(deadline.signal);
+      if (stdin.length > 0) inputs.push({ file: "(stdin)", text: stdin });
+    }
+  } catch (err) {
+    acquisitionError = err;
   }
 
   if (warnings.length > 0 && !opts.quiet && !json) {
     for (const warning of warnings) process.stderr.write(c.yellow(`warning: ${warning}`) + "\n");
   }
-  if (inputs.length === 0) return emitDistillConfigError(json, "distill found no readable input", warnings);
-
-  const sessionId = opts.sessionId ?? newSessionId();
-  const started = deps.now?.() ?? Date.now();
-  const abort = new AbortController();
-  let timedOut = false;
-  let interrupted = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  if (config.maxTimeMs > 0) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-    }, config.maxTimeMs);
+  if (!acquisitionError && inputs.length === 0) {
+    if (deps.complete === undefined) process.off("SIGINT", onSigint);
+    deadline.dispose();
+    return emitDistillConfigError(json, "distill found no readable input", warnings);
   }
-  const onSigint = () => {
-    interrupted = true;
-    abort.abort();
-    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
-  };
-  if (deps.complete === undefined) process.on("SIGINT", onSigint);
 
   const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
   let turns = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
+  let completionTokens = 0;
   const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
     turns++;
-    if (deps.complete) return deps.complete(messages, options);
-    let usage = { promptTokens: 0, evalTokens: 0 };
-    const text = await client!.complete(
-      messages,
-      {
-        ...options,
-        onUsage: (u) => {
-          usage = u;
-          options.onUsage?.(u);
+    let completed: DistillCompleteResult;
+    if (deps.complete) {
+      completed = await abortable(deps.complete(messages, options), deadline.signal);
+    } else {
+      let usage = { promptTokens: 0, evalTokens: 0 };
+      const text = await client!.complete(
+        messages,
+        {
+          ...options,
+          onUsage: (u) => {
+            usage = u;
+            options.onUsage?.(u);
+          },
         },
-      },
-      abort.signal,
-    );
-    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+        deadline.signal,
+      );
+      completed = { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+    }
+    promptLastTokens = completed.promptTokens ?? 0;
+    promptTotalTokens += completed.promptTokens ?? 0;
+    completionTokens += completed.evalTokens ?? 0;
+    return completed;
   };
 
   let result = "";
   let status: RunStatus = "error";
   let error: string | undefined;
   let errorKind: ErrorKind | undefined;
-  let promptTokens = 0;
-  let completionTokens = 0;
   try {
+    if (acquisitionError) throw acquisitionError;
     const out = await distill(
       {
         query,
@@ -1114,25 +2122,32 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
       },
       { complete, estimator: estimateTokens },
     );
+    if (deadline.remainingMs() === 0) throw deadline.signal.reason;
     result = JSON.stringify(out.digest, null, 2);
-    promptTokens = out.promptTokens;
-    completionTokens = out.evalTokens;
     status = "ok";
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
-    errorKind = err instanceof DistillConfigError ? "config" : err instanceof DistillModelError ? "ollama_error" : classifyError(error);
+    status = deadline.cause ? (deadline.timedOut ? "timeout" : "interrupted") : "error";
+    errorKind = deadline.cause
+      ? undefined
+      : err instanceof DistillConfigError
+        ? "config"
+        : err instanceof DistillModelError
+          ? "ollama_error"
+          : classifyError(error);
+    if (deadline.cause) error = undefined;
   } finally {
-    if (timer) clearTimeout(timer);
     if (deps.complete === undefined) process.off("SIGINT", onSigint);
+    deadline.dispose();
   }
 
-  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const durationMs = now() - started;
   const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date(started).toISOString(),
     cwd,
     model: config.model,
+    dimensions,
     prompt: query,
     kind: opts.kind ?? "distill",
     status,
@@ -1142,7 +2157,7 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
     durationMs,
     turns,
     toolCalls: 0,
-    tokens: { prompt: promptTokens, completion: completionTokens },
+    tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
     report: { changedFiles: [], commandsRun: [] },
   };
   saveSession(record);
@@ -1175,15 +2190,18 @@ function emitDiffConfigError(json: boolean, message: string): number {
 
 function diffForJson(record: SessionRecord) {
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
     digest: record.result ? JSON.parse(record.result) : undefined,
     error: record.error,
     error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     turns: record.turns,
     tokens: record.tokens,
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
     kind: record.kind,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<diff digest useful? snapshot citations verified?>"`,
@@ -1234,14 +2252,18 @@ function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
 }
 
 function readDiffStdin(signal: AbortSignal): Promise<string> {
-  const onAbort = () => process.stdin.destroy();
-  signal.addEventListener("abort", onAbort, { once: true });
-  return abortable(readStdinRaw(), signal).finally(() => signal.removeEventListener("abort", onAbort));
+  return readStdinRaw(signal);
 }
 
 export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<number> {
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return emitDiffConfigError(argv.includes("--json"), err instanceof Error ? err.message : String(err));
+  }
   const json = opts.json;
+  const dimensions = executionDimensions(opts);
   const query = opts.distillQuery;
   if (opts.resumeFrom !== undefined) return emitDiffConfigError(json, "diff does not support --resume");
   if (!query || !query.trim()) return emitDiffConfigError(json, "diff requires -q/--query");
@@ -1255,52 +2277,52 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
   const { config } = opts;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
   const sessionId = opts.sessionId ?? newSessionId();
-  const started = deps.now?.() ?? Date.now();
-  const abort = new AbortController();
-  let timedOut = false;
-  let interrupted = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  if (config.maxTimeMs > 0) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-    }, config.maxTimeMs);
-  }
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const deadline = new RunDeadline(config.maxTimeMs, now, undefined, started);
   const onSigint = () => {
-    interrupted = true;
-    abort.abort();
+    deadline.interrupt();
     process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
   };
   if (deps.complete === undefined) process.on("SIGINT", onSigint);
   const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
   let turns = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
+  let completionTokens = 0;
   const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
     turns++;
-    if (deps.complete) return deps.complete(messages, options);
-    let usage = { promptTokens: 0, evalTokens: 0 };
-    const text = await client!.complete(messages, {
-      ...options,
-      onUsage: (u) => {
-        usage = u;
-        options.onUsage?.(u);
-      },
-    }, abort.signal);
-    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+    let completed: DistillCompleteResult;
+    if (deps.complete) {
+      completed = await abortable(deps.complete(messages, options), deadline.signal);
+    } else {
+      let usage = { promptTokens: 0, evalTokens: 0 };
+      const text = await client!.complete(messages, {
+        ...options,
+        onUsage: (u) => {
+          usage = u;
+          options.onUsage?.(u);
+        },
+      }, deadline.signal);
+      completed = { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+    }
+    promptLastTokens = completed.promptTokens ?? 0;
+    promptTotalTokens += completed.promptTokens ?? 0;
+    completionTokens += completed.evalTokens ?? 0;
+    return completed;
   };
 
   let result = "";
   let status: RunStatus = "error";
   let error: string | undefined;
   let errorKind: ErrorKind | undefined;
-  let promptTokens = 0;
-  let completionTokens = 0;
   try {
     const shouldReadStdin = deps.readStdin !== undefined || stdinHasData();
     let diffText: string;
     if (shouldReadStdin) {
       diffText = deps.readStdin
-        ? await abortable(deps.readStdin(), abort.signal)
-        : await readDiffStdin(abort.signal);
+        ? await abortable(deps.readStdin(), deadline.signal)
+        : await readDiffStdin(deadline.signal);
       if (!diffText.trim()) throw new DistillConfigError("diff input from stdin is empty");
     } else {
       const gitArgs = ["diff", "--no-ext-diff", "--no-color"];
@@ -1308,14 +2330,14 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
       if (opts.base) gitArgs.push(opts.base);
       gitArgs.push("--");
       try {
-        diffText = await abortable((deps.runGit ?? runGitDiff)(gitArgs, cwd, abort.signal), abort.signal);
+        diffText = await abortable((deps.runGit ?? runGitDiff)(gitArgs, cwd, deadline.signal), deadline.signal);
       } catch (err) {
-        if (abort.signal.aborted || err instanceof DistillConfigError) throw err;
+        if (deadline.signal.aborted || err instanceof DistillConfigError) throw err;
         throw new DistillConfigError(`git diff failed: ${err instanceof Error ? err.message : String(err)}`);
       }
       if (!diffText.trim()) throw new DistillConfigError("git diff is empty");
     }
-    if (abort.signal.aborted) throw new Error("operation aborted");
+    if (deadline.signal.aborted) throw deadline.signal.reason;
 
     const out = await preprocessDiff({
       query,
@@ -1324,32 +2346,32 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
       budget,
       think: opts.noThink ? false : opts.distillThink,
     }, { complete, estimator: estimateTokens });
-    if (abort.signal.aborted) throw new Error("operation aborted");
+    if (deadline.remainingMs() === 0) throw deadline.signal.reason;
     result = JSON.stringify(out.digest, null, 2);
-    promptTokens = out.promptTokens;
-    completionTokens = out.evalTokens;
     status = "ok";
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
-    errorKind = interrupted || timedOut
+    status = deadline.cause ? (deadline.timedOut ? "timeout" : "interrupted") : "error";
+    errorKind = deadline.cause
       ? undefined
       : err instanceof DistillConfigError
         ? "config"
         : err instanceof DistillModelError
           ? "ollama_error"
           : classifyError(error);
+    if (deadline.cause) error = undefined;
   } finally {
-    if (timer) clearTimeout(timer);
     if (deps.complete === undefined) process.off("SIGINT", onSigint);
+    deadline.dispose();
   }
 
-  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const durationMs = now() - started;
   const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date(started).toISOString(),
     cwd,
     model: config.model,
+    dimensions,
     prompt: query,
     kind: opts.kind ?? "diff",
     status,
@@ -1359,7 +2381,7 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
     durationMs,
     turns,
     toolCalls: 0,
-    tokens: { prompt: promptTokens, completion: completionTokens },
+    tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
     report: { changedFiles: [], commandsRun: [] },
   };
   saveSession(record);
@@ -1408,6 +2430,9 @@ const RESEARCH_VALUE_FLAGS = new Set([
   "--max-time",
   "--model",
   "--kind",
+  "--caller",
+  "--hardware",
+  "--integration-version",
   "--cwd",
   "--session-id",
   "--num-ctx",
@@ -1455,9 +2480,7 @@ function emitResearchConfigError(json: boolean, message: string): number {
 }
 
 function writeResearchSnapshots(sessionId: string, snapshots: WebSnapshot[]): SavedResearchSnapshot[] {
-  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId) || sessionId.includes("..")) {
-    throw new ResearchConfigError("--session-id contains unsafe characters");
-  }
+  validateSessionId(sessionId);
   const root = path.join(dataDir(), "research", sessionId);
   fs.mkdirSync(path.dirname(root), { recursive: true });
   fs.mkdirSync(root);
@@ -1515,6 +2538,7 @@ function sanitizedResearchSources(
 function researchForJson(record: SessionRecord) {
   const payload = record.result ? JSON.parse(record.result) as ResearchSessionResult : undefined;
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
     digest: payload?.digest,
@@ -1523,9 +2547,11 @@ function researchForJson(record: SessionRecord) {
     error: record.error,
     error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     turns: record.turns,
     tokens: record.tokens,
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
     kind: record.kind,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<research useful? source snapshots and citations verified?>"`,
@@ -1567,8 +2593,14 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
   const preliminaryJson = argv.includes("--json");
   const argvError = validateResearchArgv(argv);
   if (argvError) return emitResearchConfigError(preliminaryJson, argvError);
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return emitResearchConfigError(preliminaryJson, err instanceof Error ? err.message : String(err));
+  }
   const json = opts.json;
+  const dimensions = executionDimensions(opts);
   const query = opts.distillQuery;
   if (!query || !query.trim()) return emitResearchConfigError(json, "research requires -q/--query");
   if (!new Set(["auto", "brave", "searxng"]).has(opts.searchProvider)) {
@@ -1583,10 +2615,6 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
   if (opts.maxTimeSet && (!Number.isFinite(opts.config.maxTimeMs) || opts.config.maxTimeMs < 0)) {
     return emitResearchConfigError(json, "--max-time must be a finite number >= 0");
   }
-  if (opts.sessionId !== undefined && (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.sessionId) || opts.sessionId.includes(".."))) {
-    return emitResearchConfigError(json, "--session-id contains unsafe characters");
-  }
-
   let directUrls: string[];
   let search: NonNullable<ResearchCliDeps["search"]>;
   try {
@@ -1601,19 +2629,9 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
   const sessionId = opts.sessionId ?? newSessionId();
   const now = deps.now ?? Date.now;
   const started = now();
-  const abort = new AbortController();
-  let timedOut = false;
-  let interrupted = false;
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  if (config.maxTimeMs > 0) {
-    timer = setTimeout(() => {
-      timedOut = true;
-      abort.abort();
-    }, config.maxTimeMs);
-  }
+  const deadline = new RunDeadline(config.maxTimeMs, now, undefined, started);
   const onSigint = () => {
-    interrupted = true;
-    abort.abort();
+    deadline.interrupt();
     process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
   };
   const fullyInjected = deps.search !== undefined && deps.fetchPage !== undefined && deps.complete !== undefined;
@@ -1621,21 +2639,32 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
 
   const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
   let turns = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
+  let completionTokens = 0;
   const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
     turns++;
-    if (deps.complete) return abortable(deps.complete(messages, options), abort.signal);
-    let usage = { promptTokens: 0, evalTokens: 0 };
-    const text = await client!.complete(messages, {
-      ...options,
-      onUsage: (value) => {
-        usage = value;
-        options.onUsage?.(value);
-      },
-    }, abort.signal);
-    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+    let completed: DistillCompleteResult;
+    if (deps.complete) {
+      completed = await abortable(deps.complete(messages, options), deadline.signal);
+    } else {
+      let usage = { promptTokens: 0, evalTokens: 0 };
+      const text = await client!.complete(messages, {
+        ...options,
+        onUsage: (value) => {
+          usage = value;
+          options.onUsage?.(value);
+        },
+      }, deadline.signal);
+      completed = { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+    }
+    promptLastTokens = completed.promptTokens ?? 0;
+    promptTotalTokens += completed.promptTokens ?? 0;
+    completionTokens += completed.evalTokens ?? 0;
+    return completed;
   };
   const fetchPage = deps.fetchPage ?? ((url: string) => fetchWebPage(url, {
-    fetch: (input, init) => globalThis.fetch(input, { ...init, signal: abort.signal }),
+    fetch: (input, init) => globalThis.fetch(input, { ...init, signal: deadline.signal }),
   }));
   const writer = deps.writeSnapshots ?? writeResearchSnapshots;
 
@@ -1643,8 +2672,6 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
   let status: RunStatus = "error";
   let error: string | undefined;
   let errorKind: ErrorKind | undefined;
-  let promptTokens = 0;
-  let completionTokens = 0;
   try {
     const out = await research({
       query,
@@ -1655,16 +2682,15 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
       budget: opts.distillBudget,
       think: opts.noThink ? false : opts.distillThink,
     }, {
-      search: (value, limit) => abortable(search(value, limit), abort.signal),
-      fetchPage: (url) => abortable(fetchPage(url), abort.signal),
+      search: (value, limit) => abortable(search(value, limit), deadline.signal),
+      fetchPage: (url) => abortable(fetchPage(url), deadline.signal),
       complete,
       estimator: estimateTokens,
       now: () => new Date(now()),
     });
-    if (abort.signal.aborted) throw new Error("operation aborted");
-    promptTokens = out.promptTokens;
-    completionTokens = out.evalTokens;
+    if (deadline.signal.aborted) throw deadline.signal.reason;
     const saved = await writer(sessionId, out.snapshots);
+    if (deadline.remainingMs() === 0) throw deadline.signal.reason;
     const sources = sanitizedResearchSources(out.sources, saved);
     const manifestPath = deps.writeSnapshots === undefined && saved.length > 0
       ? path.join(dataDir(), "research", sessionId, "manifest.json")
@@ -1673,8 +2699,8 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
     status = "ok";
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
-    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
-    errorKind = interrupted || timedOut
+    status = deadline.cause ? (deadline.timedOut ? "timeout" : "interrupted") : "error";
+    errorKind = deadline.cause
       ? undefined
       : err instanceof ResearchConfigError
         ? "config"
@@ -1683,9 +2709,10 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
           : err instanceof ResearchFetchError
             ? "connection"
             : classifyError(error);
+    if (deadline.cause) error = undefined;
   } finally {
-    if (timer) clearTimeout(timer);
     if (!fullyInjected) process.off("SIGINT", onSigint);
+    deadline.dispose();
   }
 
   const durationMs = now() - started;
@@ -1694,6 +2721,7 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
     createdAt: new Date(started).toISOString(),
     cwd,
     model: config.model,
+    dimensions,
     prompt: query,
     kind: opts.kind ?? "research",
     status,
@@ -1703,7 +2731,7 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
     durationMs,
     turns,
     toolCalls: 0,
-    tokens: { prompt: promptTokens, completion: completionTokens },
+    tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
     report: { changedFiles: [], commandsRun: [] },
   };
   saveSession(record);
@@ -1750,16 +2778,19 @@ function emitScoutConfigError(json: boolean, message: string): number {
 
 function scoutForJson(record: SessionRecord) {
   return {
+    schema_version: record.schemaVersion ?? 2,
     session_id: record.id,
     status: record.status,
     digest: record.result ? JSON.parse(record.result) : undefined,
     error: record.error,
     error_kind: record.errorKind,
     duration_ms: record.durationMs,
+    durations: record.durations ?? { total_ms: record.durationMs },
     turns: record.turns,
     tool_calls: record.toolCalls,
     tokens: record.tokens,
     model: record.model,
+    dimensions: record.dimensions,
     cwd: record.cwd,
     kind: record.kind,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<scout useful? cited ranges verified?>"`,
@@ -1813,8 +2844,14 @@ function parseFailedScoutDigest(text: string, error: string | undefined, turns: 
 }
 
 export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise<number> {
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    return emitScoutConfigError(argv.includes("--json"), err instanceof Error ? err.message : String(err));
+  }
   const json = opts.json;
+  const dimensions = executionDimensions(opts);
   const query = opts.distillQuery;
   if (opts.resumeFrom !== undefined) return emitScoutConfigError(json, "scout does not support --resume");
   if (!query || !query.trim()) return emitScoutConfigError(json, "scout requires -q/--query");
@@ -1824,21 +2861,43 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
   if (!opts.maxIterationsSet) config.maxIterations = Math.min(config.maxIterations, 20);
   if (!opts.maxTimeSet) config.maxTimeMs = 900_000;
   const cwd = path.resolve(opts.cwd ?? process.cwd());
-  const sessionId = opts.sessionId ?? newSessionId();
   const now = deps.now ?? Date.now;
   const started = now();
+  const deadline = deps.createAgent === undefined
+    ? new RunDeadline(config.maxTimeMs, now, undefined, started)
+    : undefined;
+  let scope: WorkspaceScope;
+  try {
+    scope = prepareWorkspaceScope(cwd, { allowedPaths: opts.allowedPaths, protectedPaths: opts.protectedPaths });
+  } catch (err) {
+    deadline?.dispose();
+    return emitScoutConfigError(json, `invalid workspace scope: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  const sessionId = opts.sessionId ?? newSessionId();
   const showProgress = json ? opts.verbose : !opts.quiet;
   const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
   let turns = 0;
   let toolCalls = 0;
-  let promptTokens = 0;
+  let promptLastTokens = 0;
+  let promptTotalTokens = 0;
   let completionTokens = 0;
+  let modelMs = 0;
+  let toolMs = 0;
+  let ttftMs: number | undefined;
   const onEvent = (e: AgentEvent) => {
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
-      promptTokens = e.promptTokens;
+      promptLastTokens = e.promptTokens;
+      promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
+    } else if (e.type === "timing") {
+      if (e.phase === "model") {
+        modelMs += e.durationMs;
+        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
+      } else {
+        toolMs += e.durationMs;
+      }
     }
     progress?.(e);
   };
@@ -1854,7 +2913,8 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
       readFiles: new Map(),
       todos: [],
       signal: new AbortController().signal,
-    }), think);
+      scope,
+    }), think, scope, deadline);
 
   const onSigint = () => {
     agent.interrupt();
@@ -1873,12 +2933,12 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     if (!parsed.ok && status === "ok") {
       const originalMaxTimeMs = config.maxTimeMs;
       const elapsedMs = now() - started;
-      const remainingMs = originalMaxTimeMs > 0 ? originalMaxTimeMs - elapsedMs : 0;
-      if (originalMaxTimeMs === 0 || remainingMs > 0) {
+      const remainingMs = deadline?.remainingMs() ?? (originalMaxTimeMs > 0 ? originalMaxTimeMs - elapsedMs : 0);
+      if ((originalMaxTimeMs === 0 || remainingMs > 0) && !deadline?.signal.aborted) {
         // Repair is a final formatting pass, not another scout loop. The
         // dedicated method exposes no tools and does not add Agent.run's
         // max-iteration wrap-up prompt.
-        const repairTimer = originalMaxTimeMs > 0
+        const repairTimer = deadline === undefined && originalMaxTimeMs > 0
           ? setTimeout(() => agent.interrupt(), Math.max(1, remainingMs))
           : undefined;
         try {
@@ -1897,19 +2957,29 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
       ? evidenceCheckedScoutDigest(parsed.digest, cwd, readFile, turns)
       : parseFailedScoutDigest(text, parsed.error, turns);
     const digest = toPreprocessResult(baseDigest, "repository", {
-      inputTokens: promptTokens || estimateTokens(query),
+      inputTokens: promptTotalTokens || estimateTokens(query),
       outputTokens: estimateTokens(JSON.stringify(baseDigest)),
-      promptTokens,
+      promptTokens: promptTotalTokens,
       completionTokens,
-      inputMeasured: promptTokens > 0,
+      inputMeasured: promptTotalTokens > 0,
     });
     result = JSON.stringify(digest, null, 2);
+    if (deadline?.remainingMs() === 0) status = "timeout";
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
     errorKind = classifyError(error);
-    status = agent.lastRunStatus === "interrupted" ? "interrupted" : "error";
+    status = agent.lastRunStatus === "interrupted"
+      ? "interrupted"
+      : agent.lastRunStatus === "timeout" || deadline?.timedOut
+        ? "timeout"
+        : "error";
+    if (status === "timeout" || status === "interrupted") {
+      error = undefined;
+      errorKind = undefined;
+    }
   } finally {
     if (deps.createAgent === undefined) process.off("SIGINT", onSigint);
+    deadline?.dispose();
   }
 
   const durationMs = now() - started;
@@ -1918,6 +2988,7 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     createdAt: new Date(started).toISOString(),
     cwd,
     model: config.model,
+    dimensions,
     prompt: query,
     kind: opts.kind ?? "scout",
     status,
@@ -1925,9 +2996,10 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     error,
     errorKind,
     durationMs,
+    durations: { total_ms: durationMs, model_ms: modelMs, tool_ms: toolMs, check_ms: 0, ttft_ms: ttftMs },
     turns,
     toolCalls,
-    tokens: { prompt: promptTokens, completion: completionTokens },
+    tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
     report: agent.getReport(),
     messages: agent.getMessages(),
   };
@@ -1967,7 +3039,15 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
     console.error("error: submit does not support research; run `lh research` directly (it is synchronous)");
     return 1;
   }
-  const opts = parseArgs(argv);
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    if (argv.includes("--json")) console.log(JSON.stringify({ status: "error", error: err instanceof Error ? err.message : String(err), error_kind: "config" }));
+    else console.error(`error: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+  const dimensions = executionDimensions(opts);
   if (opts.prompt === "-") opts.prompt = await readStdin();
   if (opts.prompt === undefined || !opts.prompt.trim()) {
     console.error("usage: lh submit -p <task> [--json] [--check COMMAND]");
@@ -1977,14 +3057,28 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
     console.error("error: submit does not support --resume; use `lh -p <follow-up> --resume <id>`");
     return 1;
   }
+  if (!opts.inPlace && opts.config.permissionMode === "yolo") {
+    console.error("error: --yolo cannot be combined with private worktree isolation; add --in-place");
+    return 1;
+  }
 
   const cwd = path.resolve(opts.cwd ?? process.cwd());
+  try {
+    prepareWorkspaceScope(cwd, { allowedPaths: opts.allowedPaths, protectedPaths: opts.protectedPaths });
+    if (!opts.inPlace) validateIsolationSource(cwd);
+  } catch (err) {
+    const message = `invalid workspace scope: ${err instanceof Error ? err.message : String(err)}`;
+    if (opts.json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    else console.error(`error: ${message}`);
+    return 1;
+  }
   const sessionId = newSessionId();
   const record: SessionRecord = {
     id: sessionId,
     createdAt: new Date().toISOString(),
     cwd,
     model: opts.config.model,
+    dimensions,
     prompt: opts.prompt,
     kind: opts.kind,
     status: "running",
@@ -1992,8 +3086,15 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
     durationMs: 0,
     turns: 0,
     toolCalls: 0,
-    tokens: { prompt: 0, completion: 0 },
+    tokens: sessionTokens(0, 0, 0),
     report: { changedFiles: [], commandsRun: [] },
+    isolation: {
+      mode: opts.inPlace ? "in_place" : "worktree",
+      source_cwd: cwd,
+      workspace_id: sessionId,
+      apply_status: "pending",
+      cleanup_status: "pending",
+    },
   };
   saveSession(record);
 
@@ -2006,15 +3107,40 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
   });
   child.unref();
   const current = loadSession(sessionId);
-  if (current?.status === "running") saveSession({ ...current, pid: child.pid });
+  if (current?.status === "running") {
+    try {
+      saveSession({ ...current, pid: child.pid }, { expectedGeneration: current.generation });
+    } catch (err) {
+      // The detached worker can finish before the parent records its pid. A
+      // generation conflict means its final record won and must not be
+      // overwritten with the stale running placeholder.
+      if (!(err instanceof SessionStoreError) || err.code !== "conflict") throw err;
+    }
+  }
 
-  if (opts.json) console.log(JSON.stringify({ session_id: sessionId, status: "running", pid: child.pid }));
+  if (opts.json) {
+    console.log(JSON.stringify({
+      session_id: sessionId,
+      status: "running",
+      pid: child.pid,
+      isolation: record.isolation,
+    }));
+  }
   else console.log(`submitted: ${sessionId} (pid ${child.pid})`);
   return 0;
 }
 
-async function cmdWait(argv: string[]): Promise<number> {
-  const { id, timeoutSeconds, json } = parseSessionWaitArgs(argv);
+export async function cmdWait(argv: string[]): Promise<number> {
+  let parsed;
+  try {
+    parsed = parseSessionWaitArgs(argv, true);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (argv.includes("--json")) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" }));
+    else console.error(`error: ${message}`);
+    return 1;
+  }
+  const { id, timeoutSeconds, json } = parsed;
   if (!id) {
     console.error("usage: lh wait <session-id> [--timeout 1200] [--json]");
     return 1;
@@ -2036,8 +3162,17 @@ async function cmdWait(argv: string[]): Promise<number> {
   }
 }
 
-function cmdPoll(argv: string[]): number {
-  const { id, json } = parseSessionWaitArgs(argv);
+export function cmdPoll(argv: string[]): number {
+  let parsed;
+  try {
+    parsed = parseSessionWaitArgs(argv, false);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (argv.includes("--json")) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" }));
+    else console.error(`error: ${message}`);
+    return 1;
+  }
+  const { id, json } = parsed;
   if (!id) {
     console.error("usage: lh poll <session-id> [--json]");
     return 1;
@@ -2060,16 +3195,25 @@ function printPolledSession(record: SessionRecord, json: boolean): number {
   return statusExitCode(record.status);
 }
 
-function parseSessionWaitArgs(argv: string[]): { id?: string; timeoutSeconds?: number; json: boolean } {
+function parseSessionWaitArgs(argv: string[], allowTimeout: boolean): { id?: string; timeoutSeconds?: number; json: boolean } {
   let id: string | undefined;
   let timeoutSeconds: number | undefined;
   let json = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
-    if (a === "--timeout") timeoutSeconds = Number(argv[++i]);
+    if (a === "--timeout") {
+      if (!allowTimeout) throw new CliConfigError("poll does not support --timeout");
+      const raw = argv[++i];
+      timeoutSeconds = Number(raw);
+      if (raw === undefined || !Number.isFinite(timeoutSeconds) || timeoutSeconds < 0) {
+        throw new CliConfigError("--timeout requires a finite number >= 0");
+      }
+    }
     else if (a === "--json") json = true;
     else if (!a.startsWith("-") && id === undefined) id = a;
+    else throw new CliConfigError(a.startsWith("-") ? `unknown option: ${a}` : `unexpected argument: ${a}`);
   }
+  if (id !== undefined) id = validateSessionId(id);
   return { id, timeoutSeconds, json };
 }
 
@@ -2078,8 +3222,15 @@ function refreshRunningSession(id: string): SessionRecord | null {
   if (!record) return null;
   if (record.status === "running" && record.pid && !isProcessAlive(record.pid)) {
     const died = { ...record, status: "died" as const, durationMs: Date.now() - Date.parse(record.createdAt) };
-    saveSession(died);
-    return died;
+    try {
+      saveSession(died, { expectedGeneration: record.generation });
+      return loadSession(id) ?? died;
+    } catch (err) {
+      // The worker may have completed between our read and liveness check.
+      // Keep its newer final record instead of overwriting it with "died".
+      if (err instanceof SessionStoreError && err.code === "conflict") return loadSession(id);
+      throw err;
+    }
   }
   return record;
 }
@@ -2125,8 +3276,14 @@ function buildDetachedArgs(opts: CliOptions, sessionId: string, cwd: string): st
     String(opts.config.headroomTokens),
   ];
   if (opts.permissionModeSet) args.push(opts.config.permissionMode === "auto" ? "--auto" : "--yolo");
+  args.push(opts.inPlace ? "--in-place" : "--worktree");
+  for (const allowed of opts.allowedPaths) args.push("--allow-path", allowed);
+  for (const protectedPath of opts.protectedPaths) args.push("--protect-path", protectedPath);
   if (opts.checkCommand) args.push("--check", opts.checkCommand, "--check-retries", String(opts.checkRetries));
   if (opts.kind) args.push("--kind", opts.kind);
+  if (opts.caller) args.push("--caller", opts.caller);
+  if (opts.hardware) args.push("--hardware", opts.hardware);
+  if (opts.integrationVersion) args.push("--integration-version", opts.integrationVersion);
   return args;
 }
 
@@ -2196,6 +3353,8 @@ async function main() {
       process.exit(cmdSessions(argv.slice(1)));
     case "stats":
       process.exit(cmdStats(argv.slice(1)));
+    case "advise":
+      process.exit(cmdAdvise(argv.slice(1)));
     case "batch":
       process.exit(await cmdBatch(argv.slice(1)));
     case "distill":
@@ -2208,13 +3367,15 @@ async function main() {
       process.exit(await cmdResearch(argv.slice(1)));
   }
 
-  const opts = parseArgs(argv);
-  if (opts.prompt === "-") opts.prompt = await readStdin();
-  if (opts.prompt !== undefined && !opts.prompt.trim()) {
-    console.error("error: empty prompt");
+  let opts: CliOptions;
+  try {
+    opts = parseArgs(argv);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (argv.includes("--json")) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+    else process.stderr.write(c.red(`error: ${message}`) + "\n");
     process.exit(1);
   }
-
   // --resume is one-shot only: it needs a follow-up prompt to append, and the
   // REPL has no session to resume into.
   if (opts.resumeFrom !== undefined && opts.prompt === undefined) {

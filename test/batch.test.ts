@@ -50,6 +50,17 @@ describe("parseManifest", () => {
     expect(tasks[0]).toEqual({ id: "docs", prompt: "tweak", kind: "doc-tweak", check: "grep -q x f", checkRetries: 3 });
   });
 
+  test("parses per-task allowed_paths and protected_paths", () => {
+    const [task] = parseManifest(JSON.stringify([{ id: "scoped", prompt: "p", allowed_paths: ["src"], protected_paths: ["src/api.ts"] }]));
+    expect(task!.allowedPaths).toEqual(["src"]);
+    expect(task!.protectedPaths).toEqual(["src/api.ts"]);
+  });
+
+  test("rejects malformed path scopes", () => {
+    expect(() => parseManifest(JSON.stringify([{ id: "x", prompt: "p", allowed_paths: "src" }]))).toThrow(BatchConfigError);
+    expect(() => parseManifest(JSON.stringify([{ id: "x", prompt: "p", protected_paths: [""] }]))).toThrow(BatchConfigError);
+  });
+
   test("leaves checkRetries undefined when absent (executor defaults to 2)", () => {
     const tasks = parseManifest(JSON.stringify([{ id: "a", prompt: "p" }]));
     expect(tasks[0]!.checkRetries).toBeUndefined();
@@ -299,6 +310,19 @@ describe("reverifyBatch", () => {
     expect(result.status).toBe("failed");
   });
 
+  test("a final sweep that exhausts its deadline is reported as timeout", async () => {
+    const result = await reverifyBatch([withCheck("only", "ok")], false, async (task) => ({
+      command: task.check!,
+      exit_code: null,
+      attempts: 1,
+      output_tail: "deadline reached",
+      timed_out: true,
+    }));
+    expect(result.executions[0]!.status).toBe("timeout");
+    expect(result.executions[0]!.check!.regressed).toBe(true);
+    expect(result.status).toBe("failed");
+  });
+
   test("a fatal abort skips the sweep entirely", async () => {
     const execs = [withCheck("a", "ok"), fakeExec({ id: "b", prompt: "b" }, "not_run")];
     let called = false;
@@ -426,18 +450,21 @@ describe("batch feedback and stats", () => {
     expect(stats.graded).toBe(2); // two tasks, not one session
     const doc = stats.byKind!.find((k) => k.kind === "doc-tweak")!;
     const tests = stats.byKind!.find((k) => k.kind === "tests")!;
-    expect(doc).toEqual({
+    expect(doc).toMatchObject({
       kind: "doc-tweak",
       graded: 1,
       pass: 1,
       fail: 0,
       rate: 100,
       avgDurationMs: 10_000,
+      p50DurationMs: 10_000,
+      p90DurationMs: 10_000,
+      rework: 0,
+      reworkRate: 0,
       gate: {
         status: "insufficient_data",
         minGraded: 3,
         minPassRate: 50,
-        reason: "need at least 3 graded runs before gating",
       },
     });
     expect(tests.avgDurationMs).toBe(30_000);
@@ -522,7 +549,10 @@ describe("cmdBatch execution", () => {
     const { cmdBatch } = await import("../src/index.ts");
     const { deps, created } = fakeDeps();
     const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
-    const rc = await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--json", "--quiet", "--session-id", "ctx-sid"], deps);
+    const rc = await cmdBatch([
+      "--tasks", file, "--cwd", tmpHome, "--in-place", "--json", "--quiet", "--session-id", "ctx-sid",
+      "--caller", "codex", "--hardware", "test-hardware", "--integration-version", "2.1.0",
+    ], deps);
     expect(rc).toBe(0);
     expect(created).toHaveLength(2); // one fresh agent per task
     // Each agent's transcript is [system, its own user prompt] — task B's agent
@@ -535,13 +565,23 @@ describe("cmdBatch execution", () => {
     expect(rec.messages!.map((m) => m.role)).toEqual(["system", "user", "system", "user"]);
     expect(rec.messages!.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["do A", "do B"]);
     expect(rec.status).toBe("ok");
+    expect(rec.dimensions).toMatchObject({
+      model: rec.model,
+      caller: "codex",
+      callerSource: "cli",
+      hardware: "test-hardware",
+      hardwareSource: "cli",
+      integrationVersion: "2.1.0",
+      integrationVersionSource: "cli",
+      localrigVersion: "0.1.0",
+    });
   });
 
   test("all tasks reuse one byte-identical system prompt (prefix KV cache holds)", async () => {
     const { cmdBatch } = await import("../src/index.ts");
     const { deps, created } = fakeDeps();
     const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
-    await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--json", "--quiet", "--session-id", "sys-sid"], deps);
+    await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--in-place", "--json", "--quiet", "--session-id", "sys-sid"], deps);
     // The prompt cmdBatch built once and handed to each fresh agent.
     const sysA = created[0]!.getMessages()[0]!.content;
     const sysB = created[1]!.getMessages()[0]!.content;
@@ -569,10 +609,10 @@ describe("cmdBatch execution", () => {
       { id: "b", prompt: "do B" },
       { id: "c", prompt: "do C" },
     ]);
-    const rc = await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "bud-sid", "--max-time", "10"], deps);
+    const rc = await cmdBatch(["--tasks", file, "--in-place", "--json", "--quiet", "--session-id", "bud-sid", "--max-time", "10"], deps);
     const rec = loadSession("bud-sid")!;
     expect(rec.tasks!.map((t) => t.status)).toEqual(["ok", "timeout", "not_run"]);
-    expect(rec.status).toBe("partial");
+    expect(rec.status).toBe("timeout");
     expect(rc).toBe(1);
     // Each task got the REMAINING budget, not a fresh full one (10s then 4s).
     expect(budgets).toEqual([10_000, 4_000]);
@@ -583,7 +623,7 @@ describe("cmdBatch execution", () => {
     let clock = 0;
     const { deps, budgets } = fakeDeps({ now: () => (clock += 1_000_000) });
     const file = manifestFile([{ id: "a", prompt: "A" }, { id: "b", prompt: "B" }]);
-    await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "nob-sid"], deps);
+    await cmdBatch(["--tasks", file, "--in-place", "--json", "--quiet", "--session-id", "nob-sid"], deps);
     const rec = loadSession("nob-sid")!;
     expect(rec.tasks!.map((t) => t.status)).toEqual(["ok", "ok"]);
     expect(budgets).toEqual([0, 0]); // 0 = unlimited handed to each agent
@@ -598,7 +638,7 @@ describe("cmdBatch execution", () => {
       },
     });
     const file = manifestFile([{ id: "a", prompt: "do A" }, { id: "b", prompt: "do B" }]);
-    await cmdBatch(["--tasks", file, "--json", "--quiet", "--session-id", "inc-sid"], deps);
+    await cmdBatch(["--tasks", file, "--in-place", "--json", "--quiet", "--session-id", "inc-sid"], deps);
     // When task A starts, only the running placeholder exists (no tasks yet).
     expect(snaps["do A"]!.status).toBe("running");
     expect(snaps["do A"]!.tasks).toEqual([]);
@@ -609,6 +649,22 @@ describe("cmdBatch execution", () => {
     const final = loadSession("inc-sid")!;
     expect(final.status).toBe("ok");
     expect(final.tasks!.map((t) => t.id)).toEqual(["a", "b"]);
+  });
+
+  test("snapshot catches unreported bash-style changes and fails allowed_paths violations", async () => {
+    const { cmdBatch } = await import("../src/index.ts");
+    fs.mkdirSync(path.join(tmpHome, "allowed"));
+    const { deps } = fakeDeps({
+      onRun: () => fs.writeFileSync(path.join(tmpHome, "outside-scope.txt"), "created by fake bash"),
+    });
+    const file = manifestFile([{ id: "scoped", prompt: "do it", allowed_paths: ["allowed"] }]);
+    const rc = await cmdBatch(["--tasks", file, "--cwd", tmpHome, "--in-place", "--json", "--quiet", "--session-id", "scope-sid"], deps);
+    const rec = loadSession("scope-sid")!;
+    expect(rc).toBe(1);
+    expect(rec.status).toBe("failed");
+    expect(rec.tasks![0]!.status).toBe("error");
+    expect(rec.tasks![0]!.report!.changedFiles).toContainEqual({ path: "outside-scope.txt", action: "created" });
+    expect(rec.error).toContain("workspace scope violation");
   });
 
   test("notRun helper preserves the task's id/kind for the record", () => {

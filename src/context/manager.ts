@@ -170,6 +170,9 @@ export class ContextManager {
         signal,
       );
     } catch (err) {
+      // Command cancellation is terminal. Do not downgrade it to a recoverable
+      // compaction failure and proceed into another model generation.
+      if (signal.aborted) throw err;
       this.hardPruneFallback(messages, onEvent, err instanceof Error ? err.message : String(err));
       return;
     }

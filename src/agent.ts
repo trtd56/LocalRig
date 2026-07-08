@@ -8,6 +8,7 @@ import type {
   ToolContext,
   ToolDef,
   ToolResult,
+  WorkspaceScope,
 } from "./types.ts";
 import { OllamaClient } from "./provider/ollama.ts";
 import { buildSystemPrompt } from "./prompt/system.ts";
@@ -17,6 +18,7 @@ import { parseFallbackToolCalls } from "./toolcall/fallback.ts";
 import { LoopDetector } from "./toolcall/loopdetect.ts";
 import { ContextManager } from "./context/manager.ts";
 import { canAutoApprove } from "./permissions.ts";
+import { combineAbortSignals, RunDeadline } from "./runtime/deadline.ts";
 
 export type PermissionFn = (
   name: string,
@@ -58,6 +60,7 @@ export class Agent {
   private seq = 0;
   private lastTodoRender = "";
   private abort = new AbortController();
+  private activeDeadline: RunDeadline | undefined;
   /** Why the most recent run() ended. Valid after run() resolves. */
   lastRunStatus: RunStatus = "ok";
 
@@ -72,6 +75,9 @@ export class Agent {
     systemPrompt?: string,
     tools?: ToolDef[],
     private forceThink?: boolean,
+    scope?: WorkspaceScope,
+    /** Command-scoped deadline shared with checks/batch orchestration. */
+    private commandDeadline?: RunDeadline,
   ) {
     this.client = new OllamaClient(config.ollamaUrl, config.model);
     this.toolCtx = {
@@ -79,6 +85,7 @@ export class Agent {
       readFiles: new Map(),
       todos: [],
       signal: this.abort.signal,
+      scope,
       report: { changedFiles: new Map(), commandsRun: [] },
     };
     this.tools = tools ?? createTools(config, this.toolCtx);
@@ -88,9 +95,8 @@ export class Agent {
   }
 
   interrupt(): void {
-    this.abort.abort();
-    this.abort = new AbortController();
-    this.toolCtx.signal = this.abort.signal;
+    if (this.commandDeadline) this.commandDeadline.interrupt();
+    else this.abort.abort();
   }
 
   /**
@@ -116,25 +122,36 @@ export class Agent {
 
   /** Run one user request to completion. Returns the final assistant text. */
   async run(userInput: string): Promise<string> {
+    return this.withRunScope(() => this.runLoop(userInput));
+  }
+
+  private async runLoop(userInput: string): Promise<string> {
     this.lastRunStatus = "error"; // overwritten on every graceful exit path
+    if (this.toolCtx.signal.aborted) return this.stopForAbort();
     this.push({ role: "user", content: userInput });
     this.loopDetector.reset();
-    const startTime = Date.now();
 
     for (let iteration = 0; iteration <= this.config.maxIterations; iteration++) {
-      // Force a text-only wrap-up (instead of dropping the session) on the last
-      // iteration or once the wall-clock budget is exhausted.
-      const timedOut =
-        this.config.maxTimeMs > 0 && Date.now() - startTime > this.config.maxTimeMs;
-      const wrapUp = iteration === this.config.maxIterations || timedOut;
+      // A hard deadline never opens another model turn, including the old
+      // text-only timeout wrap-up. Max-iteration wrap-up remains available.
+      if (this.toolCtx.signal.aborted || this.activeDeadline?.remainingMs() === 0) {
+        return this.stopForAbort();
+      }
+      const wrapUp = iteration === this.config.maxIterations;
       if (wrapUp) {
         this.push({
           role: "user",
           content:
-            "[system] CRITICAL - stopping now (step or time budget reached). Do NOT make any tool calls. Respond with text only: summarize what was accomplished, what remains, and any blockers.",
+            "[system] CRITICAL - stopping now (step budget reached). Do NOT make any tool calls. Respond with text only: summarize what was accomplished, what remains, and any blockers.",
         });
       }
-      await this.contextManager.manage(this.messages, this.onEvent, this.abort.signal);
+      try {
+        await this.contextManager.manage(this.messages, this.onEvent, this.toolCtx.signal);
+      } catch (err) {
+        if (this.toolCtx.signal.aborted) return this.stopForAbort();
+        throw err;
+      }
+      if (this.toolCtx.signal.aborted) return this.stopForAbort();
 
       // Stream the model turn, retrying if the thinking watchdog interrupts a
       // runaway reasoning block. Wrap-up turns disable thinking outright; the
@@ -148,6 +165,10 @@ export class Agent {
           this.lastRunStatus = "interrupted";
           return "[interrupted]";
         }
+        if (turn.kind === "timeout") {
+          this.lastRunStatus = "timeout";
+          return "[stopped: reached time budget]";
+        }
         if (turn.kind === "response") {
           response = turn.response;
           break;
@@ -160,6 +181,8 @@ export class Agent {
       }
       this.onEvent({ type: "turn_end" });
 
+      if (this.toolCtx.signal.aborted) return this.stopForAbort();
+
       const msg = response.message;
       this.push(msg);
       this.contextManager.recordUsage(this.messages, response.promptTokens, response.evalTokens);
@@ -171,11 +194,8 @@ export class Agent {
       });
 
       if (wrapUp) {
-        this.lastRunStatus = timedOut ? "timeout" : "max_iterations";
-        return (
-          msg.content ||
-          (timedOut ? "[stopped: reached time budget]" : "[stopped: reached max iterations]")
-        );
+        this.lastRunStatus = "max_iterations";
+        return msg.content || "[stopped: reached max iterations]";
       }
 
       // Fallback: some turns emit tool calls as text instead of native calls.
@@ -248,6 +268,7 @@ export class Agent {
           tool_name: resolved.tool.name,
           _filePath: result.filePath,
         });
+        if (this.toolCtx.signal.aborted) return this.stopForAbort();
       }
 
       this.injectTodoReminderIfChanged();
@@ -272,13 +293,28 @@ export class Agent {
    * needs a final serialization repair without reopening the agent loop.
    */
   async runTextOnly(userInput: string): Promise<string> {
+    return this.withRunScope(() => this.runTextOnlyTurn(userInput));
+  }
+
+  private async runTextOnlyTurn(userInput: string): Promise<string> {
     this.lastRunStatus = "error";
+    if (this.toolCtx.signal.aborted) return this.stopForAbort();
     this.push({ role: "user", content: userInput });
-    await this.contextManager.manage(this.messages, this.onEvent, this.abort.signal);
+    try {
+      await this.contextManager.manage(this.messages, this.onEvent, this.toolCtx.signal);
+    } catch (err) {
+      if (this.toolCtx.signal.aborted) return this.stopForAbort();
+      throw err;
+    }
+    if (this.toolCtx.signal.aborted) return this.stopForAbort();
     const turn = await this.streamTurn(false, 0, []);
     if (turn.kind === "user_abort") {
       this.lastRunStatus = "interrupted";
       return "[interrupted]";
+    }
+    if (turn.kind === "timeout") {
+      this.lastRunStatus = "timeout";
+      return "[stopped: reached time budget]";
     }
     if (turn.kind === "interrupted") {
       this.lastRunStatus = "error";
@@ -303,9 +339,8 @@ export class Agent {
    * Stream one model turn under the thinking watchdog. The watchdog gets its
    * own AbortController; a user Ctrl+C (userSignal) is forwarded to it so both
    * cancel the in-flight request, but we then read userSignal to tell a user
-   * abort apart from a watchdog interrupt. userSignal is captured up front:
-   * interrupt() swaps in a fresh this.abort, so re-reading it would inspect the
-   * wrong controller.
+   * abort apart from a watchdog interrupt. userSignal is captured up front so
+   * each in-flight turn observes the exact command/run scope that started it.
    */
   private async streamTurn(
     think: boolean | undefined,
@@ -315,8 +350,9 @@ export class Agent {
     | { kind: "response"; response: ChatResponse }
     | { kind: "interrupted" }
     | { kind: "user_abort" }
+    | { kind: "timeout" }
   > {
-    const userSignal = this.abort.signal;
+    const userSignal = this.toolCtx.signal;
     const watchdog = new AbortController();
     const onUserAbort = () => watchdog.abort();
     userSignal.addEventListener("abort", onUserAbort, { once: true });
@@ -324,6 +360,8 @@ export class Agent {
     let thinkingChars = 0;
     let sawOutput = false;
     let interrupted = false;
+    const started = Date.now();
+    let firstTokenAt: number | undefined;
     try {
       const response = await this.client.chat(
         this.messages,
@@ -338,6 +376,9 @@ export class Agent {
           think,
         },
         (chunk) => {
+          if (firstTokenAt === undefined && (chunk.content || chunk.thinking || chunk.toolCall)) {
+            firstTokenAt = Date.now();
+          }
           if (chunk.content || chunk.toolCall) sawOutput = true;
           if (chunk.thinking) {
             this.onEvent({ type: "thinking_delta", text: chunk.thinking });
@@ -363,11 +404,19 @@ export class Agent {
       return { kind: "response", response };
     } catch (err) {
       // A user Ctrl+C aborts userSignal (and, via the listener, the watchdog).
-      if (userSignal.aborted) return { kind: "user_abort" };
+      if (userSignal.aborted) {
+        return this.activeDeadline?.timedOut ? { kind: "timeout" } : { kind: "user_abort" };
+      }
       if (interrupted) return { kind: "interrupted" };
       throw err;
     } finally {
       userSignal.removeEventListener("abort", onUserAbort);
+      this.onEvent({
+        type: "timing",
+        phase: "model",
+        durationMs: Date.now() - started,
+        ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - started,
+      });
     }
   }
 
@@ -377,21 +426,31 @@ export class Agent {
     this.loopDetector.noteCall(tool.name, args);
 
     if (tool.mutating && !canAutoApprove(this.config.permissionMode, tool.name, args)) {
-      const approved = await this.askPermission(tool.name, args, display);
+      const approved = await raceWithSignal(
+        this.askPermission(tool.name, args, display),
+        this.toolCtx.signal,
+      ).catch(() => false);
       if (!approved) {
+        if (this.toolCtx.signal.aborted) {
+          return { ok: false, output: "[interrupted while waiting for permission]" };
+        }
         return { ok: false, output: "[denied] The user declined this action. Ask them how to proceed or try a different approach." };
       }
     }
 
     this.onEvent({ type: "tool_start", name: tool.name, args, display });
+    const started = Date.now();
     let result: ToolResult;
     try {
-      result = await tool.execute(args, this.toolCtx);
+      result = await raceWithSignal(tool.execute(args, this.toolCtx), this.toolCtx.signal);
     } catch (err) {
-      result = { ok: false, output: `Tool crashed: ${err instanceof Error ? err.message : String(err)}` };
+      result = this.toolCtx.signal.aborted
+        ? { ok: false, output: "[tool interrupted]" }
+        : { ok: false, output: `Tool crashed: ${err instanceof Error ? err.message : String(err)}` };
     }
     this.loopDetector.noteResult(tool.name, result);
     this.onEvent({ type: "tool_end", name: tool.name, result });
+    this.onEvent({ type: "timing", phase: "tool", durationMs: Date.now() - started });
 
     // Dedup: a fresh read of the same file supersedes older copies in history.
     if (result.filePath) {
@@ -423,6 +482,37 @@ export class Agent {
       commandsRun: [...report.commandsRun],
     };
   }
+
+  private async withRunScope<T>(fn: () => Promise<T>): Promise<T> {
+    // A REPL interrupt applies to only the current request; command-scoped
+    // deadlines remain aborted permanently so checks/repairs cannot restart.
+    if (!this.commandDeadline && this.abort.signal.aborted) this.abort = new AbortController();
+    const ownedDeadline = this.commandDeadline ? undefined : new RunDeadline(this.config.maxTimeMs);
+    const deadline = this.commandDeadline ?? ownedDeadline!;
+    const combined = combineAbortSignals([this.abort.signal, deadline.signal]);
+    this.activeDeadline = deadline;
+    this.toolCtx.signal = combined.signal;
+    this.toolCtx.deadlineAt = deadline.deadlineAt;
+    try {
+      return await fn();
+    } finally {
+      combined.dispose();
+      ownedDeadline?.dispose();
+      this.activeDeadline = undefined;
+      this.toolCtx.deadlineAt = undefined;
+      if (!this.commandDeadline && this.abort.signal.aborted) this.abort = new AbortController();
+      this.toolCtx.signal = this.abort.signal;
+    }
+  }
+
+  private stopForAbort(): string {
+    if (this.activeDeadline?.timedOut) {
+      this.lastRunStatus = "timeout";
+      return "[stopped: reached time budget]";
+    }
+    this.lastRunStatus = "interrupted";
+    return "[interrupted]";
+  }
 }
 
 function isMutatingName(name: string | undefined): boolean {
@@ -436,4 +526,13 @@ function summarizeArgs(args: Record<string, unknown>): string {
     parts.push(`${k}=${s.length > 80 ? s.slice(0, 77) + "..." : s}`);
   }
   return parts.join(" ");
+}
+
+function raceWithSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(signal.reason ?? new DOMException("Aborted", "AbortError"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
