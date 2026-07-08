@@ -10,6 +10,17 @@ LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証
 - **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり、全21タスクで $3 前後)
 - `bun` (このリポジトリの標準ランタイム)。type-repair タスクの verify は `bunx tsc` を使う(初回のみネットワークからダウンロード)
 
+## LLM不要の diff adapter 評価
+
+parser と snapshot citation verifier の最低限の再現率は、モデルを起動せず決定的に確認できる。
+
+```sh
+bun run eval:diff-adapter
+# expected=2, verified=2, fabricated citation dropped=1, recall=1
+```
+
+これは added/deleted 両側の location 保持と捏造quote除外だけを測る。`lh diff` の発火閾値（READMEの暫定500行/32KB）はまだ実モデル比較で校正していない。確定には同一diffレビュー課題で baseline と前処理アームを複数回走らせ、最終成功率、上位モデル総コスト、citation recall、圧縮率、壁時計を比較する。
+
 ## 実行
 
 ```sh

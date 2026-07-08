@@ -28,6 +28,8 @@ import {
   type DistillCompleteResult,
   type DistillInput,
 } from "./distill.ts";
+import { preprocessDiff } from "./diff.ts";
+import { toPreprocessResult } from "./preprocess.ts";
 import { estimateTokens } from "./context/tokens.ts";
 import { OllamaClient } from "./provider/ollama.ts";
 import { buildScoutSystemPrompt, buildSystemPrompt } from "./prompt/system.ts";
@@ -74,6 +76,9 @@ Usage:
   lh scout -q "question" [--paths src/ lib/] [--json]
                             read-only repository scout: find relevant files and
                             return a citation-checked digest
+  lh diff -q "question" [--staged] [--base REF] [--json]
+                            summarize stdin or the cwd git diff with citations
+                            verified against the immutable diff snapshot
   lh wait <id> [--timeout 1200] [--json]
                             wait for a submitted session to finish
   lh poll <id> [--json]     inspect a submitted session without blocking
@@ -130,6 +135,12 @@ Scout flags:
                             unless explicitly overridden
   --think / --no-think      thinking is on by default for scout; --no-think
                             disables it for comparison runs
+Diff flags:
+  -q, --query TEXT          required question about the diff
+  --staged                  inspect the index instead of the working tree
+  --base REF                compare REF to the working tree (safe argv, no shell)
+  --budget TOKENS           target digest output budget (default: 2000)
+  --think / --no-think      thinking is off by default; --think enables it
   --resume ID               continue a saved session (one-shot only): restore
                             its transcript, append the prompt as a follow-up,
                             and resume the agent loop. Records resumed_from and
@@ -162,6 +173,8 @@ interface CliOptions {
   distillThink: boolean;
   scoutPaths: string[];
   noThink: boolean;
+  staged: boolean;
+  base?: string;
   positionals: string[];
 }
 
@@ -180,6 +193,7 @@ export function parseArgs(argv: string[]): CliOptions {
     distillThink: false,
     scoutPaths: [],
     noThink: false,
+    staged: false,
     positionals: [],
   };
   // Fields already pinned by an env var baked into defaultConfig at load time.
@@ -261,6 +275,13 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--no-think":
         opts.noThink = true;
+        break;
+      case "--staged":
+        opts.staged = true;
+        break;
+      case "--base":
+        if (argv[i + 1] === undefined || argv[i + 1]!.startsWith("-")) opts.base = "";
+        else opts.base = argv[++i]!;
         break;
       case "--paths":
         while (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("-")) {
@@ -1091,6 +1112,221 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
   return statusExitCode(status);
 }
 
+// ---------- diff preprocessing ----------
+
+export interface DiffCliDeps {
+  readStdin?: () => Promise<string>;
+  runGit?: (args: string[], cwd: string, signal: AbortSignal) => Promise<string>;
+  complete?: (messages: ChatMessage[], options: ChatRequestOptions) => Promise<DistillCompleteResult>;
+  now?: () => number;
+}
+
+function emitDiffConfigError(json: boolean, message: string): number {
+  if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+  else process.stderr.write(c.red(`error: ${message}`) + "\n");
+  return 1;
+}
+
+function diffForJson(record: SessionRecord) {
+  return {
+    session_id: record.id,
+    status: record.status,
+    digest: record.result ? JSON.parse(record.result) : undefined,
+    error: record.error,
+    error_kind: record.errorKind,
+    duration_ms: record.durationMs,
+    turns: record.turns,
+    tokens: record.tokens,
+    model: record.model,
+    cwd: record.cwd,
+    kind: record.kind,
+    feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<diff digest useful? snapshot citations verified?>"`,
+  };
+}
+
+function runGitDiff(args: string[], cwd: string, signal: AbortSignal): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, signal, stdio: ["ignore", "pipe", "pipe"] });
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    let size = 0;
+    const maxBytes = 64 * 1024 * 1024;
+    child.stdout.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > maxBytes) {
+        child.kill();
+        reject(new DistillConfigError("git diff exceeds the 64 MiB safety limit"));
+        return;
+      }
+      stdout.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(stdout).toString("utf8"));
+      else reject(new DistillConfigError(`git diff failed (${code ?? "signal"}): ${Buffer.concat(stderr).toString("utf8").trim()}`));
+    });
+  });
+}
+
+function abortable<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new Error("operation aborted"));
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new Error("operation aborted"));
+    signal.addEventListener("abort", onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      },
+      (err) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(err);
+      },
+    );
+  });
+}
+
+function readDiffStdin(signal: AbortSignal): Promise<string> {
+  const onAbort = () => process.stdin.destroy();
+  signal.addEventListener("abort", onAbort, { once: true });
+  return abortable(readStdinRaw(), signal).finally(() => signal.removeEventListener("abort", onAbort));
+}
+
+export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<number> {
+  const opts = parseArgs(argv);
+  const json = opts.json;
+  const query = opts.distillQuery;
+  if (opts.resumeFrom !== undefined) return emitDiffConfigError(json, "diff does not support --resume");
+  if (!query || !query.trim()) return emitDiffConfigError(json, "diff requires -q/--query");
+  if (opts.positionals.length > 0) return emitDiffConfigError(json, "diff does not accept positional files; pipe a diff or use --cwd");
+  if (opts.base !== undefined && (!opts.base.trim() || opts.base.startsWith("-"))) {
+    return emitDiffConfigError(json, "--base must be a non-option git ref");
+  }
+  const budget = Math.floor(opts.distillBudget);
+  if (!Number.isFinite(opts.distillBudget) || budget < 1) return emitDiffConfigError(json, "--budget must be an integer >= 1");
+
+  const { config } = opts;
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const sessionId = opts.sessionId ?? newSessionId();
+  const started = deps.now?.() ?? Date.now();
+  const abort = new AbortController();
+  let timedOut = false;
+  let interrupted = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (config.maxTimeMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, config.maxTimeMs);
+  }
+  const onSigint = () => {
+    interrupted = true;
+    abort.abort();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  if (deps.complete === undefined) process.on("SIGINT", onSigint);
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  let turns = 0;
+  const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
+    turns++;
+    if (deps.complete) return deps.complete(messages, options);
+    let usage = { promptTokens: 0, evalTokens: 0 };
+    const text = await client!.complete(messages, {
+      ...options,
+      onUsage: (u) => {
+        usage = u;
+        options.onUsage?.(u);
+      },
+    }, abort.signal);
+    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+  };
+
+  let result = "";
+  let status: RunStatus = "error";
+  let error: string | undefined;
+  let errorKind: ErrorKind | undefined;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  try {
+    const shouldReadStdin = deps.readStdin !== undefined || stdinHasData();
+    let diffText: string;
+    if (shouldReadStdin) {
+      diffText = deps.readStdin
+        ? await abortable(deps.readStdin(), abort.signal)
+        : await readDiffStdin(abort.signal);
+      if (!diffText.trim()) throw new DistillConfigError("diff input from stdin is empty");
+    } else {
+      const gitArgs = ["diff", "--no-ext-diff", "--no-color"];
+      if (opts.staged) gitArgs.push("--cached");
+      if (opts.base) gitArgs.push(opts.base);
+      gitArgs.push("--");
+      try {
+        diffText = await abortable((deps.runGit ?? runGitDiff)(gitArgs, cwd, abort.signal), abort.signal);
+      } catch (err) {
+        if (abort.signal.aborted || err instanceof DistillConfigError) throw err;
+        throw new DistillConfigError(`git diff failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!diffText.trim()) throw new DistillConfigError("git diff is empty");
+    }
+    if (abort.signal.aborted) throw new Error("operation aborted");
+
+    const out = await preprocessDiff({
+      query,
+      text: diffText,
+      numCtx: config.numCtx,
+      budget,
+      think: opts.noThink ? false : opts.distillThink,
+    }, { complete, estimator: estimateTokens });
+    if (abort.signal.aborted) throw new Error("operation aborted");
+    result = JSON.stringify(out.digest, null, 2);
+    promptTokens = out.promptTokens;
+    completionTokens = out.evalTokens;
+    status = "ok";
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
+    errorKind = interrupted || timedOut
+      ? undefined
+      : err instanceof DistillConfigError
+        ? "config"
+        : err instanceof DistillModelError
+          ? "ollama_error"
+          : classifyError(error);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (deps.complete === undefined) process.off("SIGINT", onSigint);
+  }
+
+  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date(started).toISOString(),
+    cwd,
+    model: config.model,
+    prompt: query,
+    kind: opts.kind ?? "diff",
+    status,
+    result,
+    error,
+    errorKind,
+    durationMs,
+    turns,
+    toolCalls: 0,
+    tokens: { prompt: promptTokens, completion: completionTokens },
+    report: { changedFiles: [], commandsRun: [] },
+  };
+  saveSession(record);
+
+  if (json) console.log(JSON.stringify(diffForJson(record)));
+  else {
+    if (result) process.stdout.write(result + "\n");
+    if (error) process.stderr.write(c.red(`error: ${error}`) + "\n");
+    process.stderr.write(c.dim(`session ${sessionId} (${status}, ${Math.round(durationMs / 1000)}s) — grade it: lh feedback ${sessionId} pass|fail`) + "\n");
+  }
+  return statusExitCode(status);
+}
+
 // ---------- scout ----------
 
 export interface ScoutAgent {
@@ -1265,9 +1501,16 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
         }
       }
     }
-    const digest = parsed.ok && parsed.digest
+    const baseDigest = parsed.ok && parsed.digest
       ? evidenceCheckedScoutDigest(parsed.digest, cwd, readFile, turns)
       : parseFailedScoutDigest(text, parsed.error, turns);
+    const digest = toPreprocessResult(baseDigest, "repository", {
+      inputTokens: promptTokens || estimateTokens(query),
+      outputTokens: estimateTokens(JSON.stringify(baseDigest)),
+      promptTokens,
+      completionTokens,
+      inputMeasured: promptTokens > 0,
+    });
     result = JSON.stringify(digest, null, 2);
   } catch (err) {
     error = err instanceof Error ? err.message : String(err);
@@ -1322,6 +1565,10 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
   }
   if (argv[0] === "scout") {
     console.error("error: submit does not support scout; run `lh scout` directly (it is synchronous)");
+    return 1;
+  }
+  if (argv[0] === "diff") {
+    console.error("error: submit does not support diff; run `lh diff` directly (it is synchronous)");
     return 1;
   }
   const opts = parseArgs(argv);
@@ -1559,6 +1806,8 @@ async function main() {
       process.exit(await cmdDistill(argv.slice(1)));
     case "scout":
       process.exit(await cmdScout(argv.slice(1)));
+    case "diff":
+      process.exit(await cmdDiff(argv.slice(1)));
   }
 
   const opts = parseArgs(argv);

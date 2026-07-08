@@ -187,6 +187,12 @@ describe("distill orchestration", () => {
     expect(result.digest.citations).toHaveLength(1);
     expect(result.digest.citations_dropped).toBe(1);
     expect(result.digest.omitted).toEqual([]);
+    expect(result.digest.input_kind).toBe("files");
+    expect(result.digest.metrics).toMatchObject({
+      prompt_tokens: 100,
+      completion_tokens: 20,
+    });
+    expect(result.digest.metrics.output_tokens).toBeGreaterThan(0);
     expect(result.promptTokens).toBe(100);
     expect(result.evalTokens).toBe(20);
   });
@@ -212,6 +218,7 @@ describe("distill orchestration", () => {
     expect(result.digest.citations).toHaveLength(0);
     expect(result.digest.citations_dropped).toBe(1);
     expect(result.digest.omitted.join("\n")).toContain("without any verified citations");
+    expect(result.digest.omitted.filter((note) => note.includes("without any verified citations"))).toHaveLength(1);
   });
 
   test("carries oversized single-line truncation into the final digest", async () => {

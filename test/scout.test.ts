@@ -97,6 +97,12 @@ describe("cmdScout", () => {
       end_line: 1,
       quote: "withRetry",
     });
+    expect(JSON.parse(rec.result).input_kind).toBe("repository");
+    expect(JSON.parse(rec.result).metrics).toMatchObject({
+      prompt_tokens: 100,
+      completion_tokens: 10,
+      token_measurement: "mixed",
+    });
     expect(JSON.parse(logs.at(-1)!).digest.turns).toBe(1);
   });
 

@@ -35,6 +35,10 @@ lh distill -q "リトライ処理はどこに実装されている?" src/**/*.ts
 
 # 探す場所からローカルに任せる read-only scout
 lh scout -q "リトライ処理の定義・登録・呼び出し元はどこ?" --paths src --json
+
+# stdin の unified diff、または cwd の git diff をスナップショット検証付きで圧縮
+git diff --staged | lh diff -q "レビュー上のリスクと挙動変更は?" --json
+lh diff -q "破壊的変更はある?" --base main --cwd /path/to/repo --json
 ```
 
 | フラグ | 意味 |
@@ -154,6 +158,14 @@ lh scout -q "offline reconciliation mode は実装されている?" --json
 ```
 
 使い分けは三択: 文字列や構造で機械的に拾えるなら `grep` / `rg` / 小さなスクリプト、読む場所が分かっている大入力なら `lh distill`、読む場所から探す必要があるなら `lh scout`。P2時点の scout 発火条件は **自分で調べると5ファイル以上読む見込みの所在調査**。`lh stats --by-kind --json` の `scout.gate.status` が `"block"` なら使わない。scout の digest も地図であって真実ではないため、編集や最終判断の前に cited range を読み直し、`not_found: true` を尊重する。`kind` 既定は `scout` なので、有用性は `lh feedback <session_id> pass|fail` で記録して `lh stats --by-kind` に蓄積する。
+
+## 前処理: `lh diff`
+
+`lh diff` は unified git diff を質問指向で圧縮する。stdin があればその内容を使い、無ければ `--cwd` で `git diff` を安全な argv 実行で取得する。`--staged` と `--base <ref>`、共通の `--budget` / `--think` / `--no-think` / `--max-time` / `--json` を利用できる。
+
+出力は distill/scout と同じ `digest` 互換フィールドに加え、`input_kind` と `metrics` を持つ。diff citation には `path`, `hunk`, `line_type`, `old_line`, `new_line`, `snapshot_line`, `snapshot_sha256` が入り、削除行も取得時の immutable diff snapshot に対して検証される。現在の作業ツリーを再読して検証しないため、取得後の編集や削除行で根拠がずれない。
+
+発火条件は実モデルで未測定のため**暫定**で、まず「そのまま上位モデルへ渡すと大きい diff（目安: 500行または32KB以上）を意味的に選別するとき」に限定する。小さいdiffや `git diff --stat` / `--name-only` / grep で答えられる問いは機械処理を優先する。`kind=diff` の feedback と最終タスク成功率・上位モデルの総コストを蓄積してから閾値を確定する。
 
 ## 委譲は得か? 使い所とコスト
 

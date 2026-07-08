@@ -1,4 +1,12 @@
 import type { ChatMessage, ChatRequestOptions } from "./types.ts";
+import {
+  type Digest,
+  type PreprocessCitation,
+  type PreprocessResult,
+  toPreprocessResult,
+} from "./preprocess.ts";
+
+export type { Digest } from "./preprocess.ts";
 
 export interface DistillInput {
   file: string;
@@ -21,20 +29,7 @@ export interface DistillChunk {
   omitted?: string[];
 }
 
-export interface Citation {
-  file: string;
-  start_line: number;
-  end_line: number;
-  quote: string;
-}
-
-export interface Digest {
-  answer: string;
-  not_found: boolean;
-  citations: Citation[];
-  omitted: string[];
-  citations_dropped: number;
-}
+export interface Citation extends PreprocessCitation {}
 
 export interface ParseDigestResult {
   ok: boolean;
@@ -61,6 +56,9 @@ export interface DistillCompleteResult {
 export interface DistillDeps {
   complete: (messages: ChatMessage[], options: ChatRequestOptions) => Promise<DistillCompleteResult>;
   estimator: (text: string) => number;
+  /** Optional source-aware verifier (used by adapters whose citation labels
+   * differ from their single serialized model input, such as unified diff). */
+  verifyCitations?: (citations: Citation[], chunk?: DistillChunk) => VerifiedCitations;
 }
 
 export interface DistillRequest {
@@ -72,7 +70,7 @@ export interface DistillRequest {
 }
 
 export interface DistillResult {
-  digest: Digest;
+  digest: PreprocessResult<Citation>;
   chunks: DistillChunk[];
   promptTokens: number;
   evalTokens: number;
@@ -608,7 +606,9 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
     const completed = await completeDigest(deps, mapMessages, options);
     promptTokens += completed.promptTokens;
     evalTokens += completed.evalTokens;
-    const checked = verifyCitations(completed.digest.citations, readInput, rangesForChunk(chunk));
+    const checked = deps.verifyCitations
+      ? deps.verifyCitations(completed.digest.citations, chunk)
+      : verifyCitations(completed.digest.citations, readInput, rangesForChunk(chunk));
     parts.push(enforceEvidence({
       ...completed.digest,
       citations: checked.verified,
@@ -623,7 +623,9 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
     const completed = await completeDigest(deps, buildReduceMessages(request.query, reduceInput), options);
     promptTokens += completed.promptTokens;
     evalTokens += completed.evalTokens;
-    const checked = verifyCitations(completed.digest.citations, readInput);
+    const checked = deps.verifyCitations
+      ? deps.verifyCitations(completed.digest.citations)
+      : verifyCitations(completed.digest.citations, readInput);
     merged = enforceEvidence({
       ...completed.digest,
       citations: dedupeCitations([...merged.citations, ...checked.verified]),
@@ -632,16 +634,28 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
     });
   }
 
-  return { digest: enforceEvidence(merged), chunks, promptTokens, evalTokens };
+  const checked = enforceEvidence(merged);
+  const inputTokens = request.inputs.reduce((sum, input) => sum + deps.estimator(input.text), 0);
+  const estimatedOutputTokens = deps.estimator(JSON.stringify(checked));
+  return {
+    digest: toPreprocessResult(checked, "files", {
+      inputTokens,
+      outputTokens: estimatedOutputTokens,
+      promptTokens,
+      completionTokens: evalTokens,
+    }),
+    chunks,
+    promptTokens,
+    evalTokens,
+  };
 }
 
 function enforceEvidence(digest: Digest): Digest {
   if (digest.not_found || !digest.answer.trim() || digest.citations.length > 0) return digest;
+  const note = "model returned an answer without any verified citations; treat the answer as unsupported";
+  if (digest.omitted.includes(note)) return digest;
   return {
     ...digest,
-    omitted: [
-      ...digest.omitted,
-      "model returned an answer without any verified citations; treat the answer as unsupported",
-    ],
+    omitted: [...digest.omitted, note],
   };
 }
