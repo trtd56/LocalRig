@@ -1,0 +1,9 @@
+{
+  "name": "scout-locate",
+  "prompt": "このコードベースを調査して、リトライポリシー `withRetryPolicy` について ANSWER.md に3行で答えてください。形式は厳密に `definition: <相対パス>`、`registration: <相対パス>`、`caller_count: <数>` としてください。ソースコードは変更しないでください。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "ANSWER.md contains the definition file, registration file, and caller count",
+    "source files must NOT be modified"
+  ]
+}

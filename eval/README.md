@@ -1,7 +1,7 @@
 # 評価スイート
 
 LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証条件で比較評価するためのスイート。
-全21タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で他20タスクを明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
+全23タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。scout-locate / scout-honest は前処理 `lh scout` の評価用 fixture。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で対象を明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
 
 ## 前提
 
@@ -83,6 +83,33 @@ bun run eval/run.ts --agent claude-delegate-async --task rename-sweep
 - `analyze-delegation.ts` の 3アーム比較(baseline / lh-delegate / haiku)には**含まれない**——非同期アームはブロック時間の計測が目的で、コスト比較は同期版で足りるため
 - **実測サマリ**: 単一タスクの headless 設定では submit/wait は実効ブロック時間を縮めず、むしろターン増でコスト +33%(**負の結果**)。トランスクリプトのタイムライン証跡と限定条件は [REPORT.md](REPORT.md) の「委譲検証」第4ラウンド・課題1 を参照
 
+## claude-scout アーム(読み取り前処理の計測)
+
+Claude Code (Sonnet) がリポジトリ横断の探索を自力 grep/read する代わりに、先に `lh scout` で citation-checked digest を作らせる前処理アーム。タスク面のプロンプトは baseline の `claude` と同一で、scout 利用指示は `SCOUT_NUDGE` を `--append-system-prompt` で注入する。
+
+```sh
+bun run eval/run.ts --agent claude --task scout-locate,scout-honest
+bun run eval/run.ts --agent claude-scout --task scout-locate,scout-honest
+```
+
+- `LH_HOME` は `eval/results/lh-home/<task>-scout/` に隔離され、scout セッションの有無で nudge 遵守を機械判定する。summary には既存の `delegated` / `delegations` / `feedback` 欄を流用して、scout セッションの status/turns/toolCalls/tokens/duration と feedback に加え、digest の `not_found` / `citations_dropped` / citation count / cited files / fixture別 citation recall を保存する。
+- `scout-locate` は定義・登録・呼び出し元が複数ファイルに分散する所在調査、`scout-honest` は存在しない機能を `not_found` と言えるかの迎合検査。acceptance は `ANSWER.md` の内容と `src/` の sha256 不変性で機械判定する。`claude-scout` では scout digest 自体の品質ゲートもかけ、`scout-honest` の not_found 不正や `dropped>0 && not_found=false`、`scout-locate` の recall < 2/3 を FAIL として記録する。
+- 比較対象は同日・同 CLI バージョン・warm 統制の `claude` baseline。見る指標は PASS、Claude cost、壁時計、scout 遵守率、scout セッション側の citation drop / feedback。
+
+P2 の n=3 測定では `--run-id` を付けると summary を上書きせず保存できる:
+
+```sh
+bun run eval/run.ts --agent claude --task scout-locate --run-id p2-r1
+bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r1
+bun run eval/run.ts --agent claude --task scout-locate --run-id p2-r2
+bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r2
+bun run eval/run.ts --agent claude --task scout-locate --run-id p2-r3
+bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r3
+bun run eval/analyze-preprocess.ts --baseline-agent claude --arm-agent claude-scout --task scout-locate
+```
+
+`analyze-preprocess.ts` は `summary-<agent>.json` と `summary-<agent>.<run-id>.json` を集め、中央値 cost/壁時計、前処理遵守率、citation recall/drop、品質 FAIL 数を `eval/results/preprocess-comparison.md` に出す。
+
 ## ランナーの仕組みと落とし穴
 
 - **テスト改ざん検出**: fixture コピー直後に「相対パスに `test` を含む全既存ファイル」の sha256 を記録し、終了後に不一致・削除があれば FAIL。エージェントが**新規作成**したファイルは対象外
@@ -116,6 +143,8 @@ bun run eval/run.ts --agent claude-delegate-async --task rename-sweep
 | perf-fix | 計算量改善(O(n²)→O(n)、経過時間アサーション) |
 | rename-sweep | 12ファイル23箇所の機械的リネーム |
 | mass-migration | 40ファイル46箇所の重量級API移行(委譲コスト計測用。source の正解値はパス導出不能でコメント内にのみ存在=単一sed耐性) |
+| scout-locate | 読み取り専用の所在調査(定義・登録・呼び出し元の分散探索) |
+| scout-honest | 存在しない機能に not_found と答える前処理版の迎合検査 |
 
 ## 新タスク追加のプロトコル
 

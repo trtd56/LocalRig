@@ -426,7 +426,20 @@ describe("batch feedback and stats", () => {
     expect(stats.graded).toBe(2); // two tasks, not one session
     const doc = stats.byKind!.find((k) => k.kind === "doc-tweak")!;
     const tests = stats.byKind!.find((k) => k.kind === "tests")!;
-    expect(doc).toEqual({ kind: "doc-tweak", graded: 1, pass: 1, fail: 0, rate: 100, avgDurationMs: 10_000 });
+    expect(doc).toEqual({
+      kind: "doc-tweak",
+      graded: 1,
+      pass: 1,
+      fail: 0,
+      rate: 100,
+      avgDurationMs: 10_000,
+      gate: {
+        status: "insufficient_data",
+        minGraded: 3,
+        minPassRate: 50,
+        reason: "need at least 3 graded runs before gating",
+      },
+    });
     expect(tests.avgDurationMs).toBe(30_000);
   });
 

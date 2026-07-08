@@ -34,6 +34,55 @@
 - 4タスクではネイティブツールコールが常に整形済みだったため、修復・fallback 経路は実運用での発動頻度が未計測
 - 再現: `bun run eval/run.ts --agent harness` / `--agent claude`(summary は実行ごとに上書きされる点に注意)
 
+## 前処理検証 第0ラウンド (`lh distill` 実装)
+
+2026-07-08 に `lh distill` のP0実装を追加した。これは委譲と違い、作業をローカルLLMへ任せるのではなく、数千行以上のログ/ファイルを上位エージェントへ渡す前に citation 付き digest へ圧縮する前処理レイヤーである。
+
+実装済み:
+- `src/distill.ts`: ファイル境界優先/行分割のチャンク計画、digest JSON parse、citation の完全一致→近傍±20行→全体探索による機械照合、幻覚引用 drop、map-reduce。
+- `lh distill -q "<query>" [files...]`: stdin対応、`--budget`、`--think`、`--json`、セッション保存、`kind=distill` の feedback/stats 連携。
+- Ollama `complete()` の JSON schema `format` 透過と非stream token usage 集計。
+- ユニット/CLI DI テスト追加。現時点の全体テストは `bun test test/` で 312/312 PASS。
+
+未実測:
+- P0計画のプリフィル tok/s 計測、`distill-log-triage` / `distill-recall-needle` fixture、`claude-distill` アームは未追加。したがって citation precision は実装上 drop により担保される一方、recall と実コスト削減はまだ評価前。
+
+## 前処理検証 第1ラウンド (`lh scout` 実装)
+
+2026-07-08 に `lh scout` のP1実装を追加した。`distill` が「読む入力が分かっている」場合の圧縮であるのに対し、`scout` は読む場所の探索からローカルに任せる read-only 前処理である。
+
+実装済み:
+- `Agent` に省略可能な tool set 注入と thinking 強制フックを追加。既存呼び出しは未指定なら従来どおり全ツール。
+- `createScoutTools(config)` は `read` / `grep` / `glob` のみを返し、`bash` / `write` / `edit` / `todo` を渡さない。
+- `buildScoutSystemPrompt(...)` は探索手順、`not_found` 規約、distill と同型の digest JSON 契約を明示。
+- `lh scout -q "<query>" [--paths ...] --json`: scout 専用 Agent 実行、最終 JSON の修復リトライ1回、`parseDigest`/`verifyCitations` による citation 照合、`parse_failed` フォールバック、セッション保存、`kind=scout` の feedback/stats 連携。`--resume` / `submit` は拒否。
+- eval に `claude-scout` アームと `SCOUT_NUDGE` を追加。`LH_HOME` を `eval/results/lh-home/<task>-scout/` に隔離し、scout セッションの有無で nudge 遵守を機械判定する。
+- eval fixture `scout-locate` / `scout-honest` を追加。前者は複数ファイルに分散した定義・登録・呼び出し元の所在調査、後者は存在しない機能を正直に not_found と答える迎合検査。両 fixture は `ANSWER.md` に加えて `src/` の sha256 不変性も verify する。
+- eval summary の scout セッションには digest の `not_found` / `citations_dropped` / citation count / cited files / fixture別 citation recall を保存する。`scout-honest` の not_found 不正や `dropped>0 && not_found=false`、`scout-locate` の recall < 2/3 は `preprocessQualityFailed` として FAIL に落とす。
+- 素の `lh scout` は明示指定がなければ `max_iterations=20` / `max_time=900s` を適用し、通常の委譲より小さい探索予算にした。
+
+検証:
+- `bun test test/`: 333/333 PASS
+- `bunx tsc --noEmit`: clean
+
+未実測:
+- P1計画の実モデル smoke(P1-0)、`scout-locate` / `scout-honest` の `claude` vs `claude-scout` 同日比較、thinking on/off 差、citation recall / dropped の集計は未実行。したがって機能は実装済みだが、scout が「何ファイル以上読む質問で黒字か」の損益分岐はまだ REPORT に数値化していない。
+
+## 前処理検証 第2ラウンド(P2 統合深化の足場)
+
+2026-07-08 に P2 のうち、実測を受けて規則化するための機械的な足場を追加した。今回の変更は実モデルの n=3 測定そのものではなく、測定値と feedback を上位エージェントの判断に安定して接続する実装である。
+
+- `lh stats --by-kind --json` の各 kind に `gate` を追加した。現行ゲートは `graded >= 3` かつ pass `rate < 50` で `gate.status:"block"`、それ未満は `insufficient_data`、閾値以上で pass rate が足りれば `allow`。委譲だけでなく `distill` / `scout` kind にも同一規則を適用する。
+- P2 の暫定発火条件を docs / skills / AGENTS snippet に同期した: `distill` は「既知入力が 1000行以上または64KB以上で、意味的選別が必要」、`scout` は「所在調査で5ファイル以上読む見込み」。どちらも `gate.status:"block"` なら使わない。
+- eval runner に `--run-id` を追加し、`summary-<agent>.<run-id>.json` を保存できるようにした。P2-4 の同日 n=3 測定で既存 summary を上書きしないため。
+- `eval/analyze-preprocess.ts` を追加した。baseline と前処理アームの複数 summary から median cost / median wall / 前処理遵守率 / citation recall / citation drop / preprocess quality fail を Markdown へ集計する。
+- Claude Code hook 案として `integrations/claude-code/hooks/distill-read-guard.js` を追加した。PreToolUse の `Read` に対し、64KBかつ1000行以上の全体 Read は hard block ではなく `ask` にして `lh distill` を促す。`offset`/`limit` 付きの220行以下の precise read は通すため、digest の cited range 確認を妨げない設計。
+
+未完了:
+
+- P0/P1 の同日・同CLIバージョン・warm統制 n=3 測定は未実施。よって 1000行/64KB と 5ファイルは暫定の運用閾値であり、実測から導いた確定損益分岐ではない。
+- `distill-log-triage` / `distill-recall-needle` と `claude-distill` アームはまだ存在しないため、distill 側の見出しセルは測れない。
+
 ## 第2回評価: 能力軸別9タスク(2026-07-03)
 
 Claude Code の行動様式を能力軸ごとに検証する5タスク(explore-codebase / debug-runtime / api-migration / git-workflow / follow-conventions)を追加し、全9タスクをハーネスで一括実行。**9/9 PASS、総所要 22分03秒**。

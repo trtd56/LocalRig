@@ -46,6 +46,22 @@ describe("parseArgs (CLI flags)", () => {
     expect(config.presencePenalty).toBe(defaultConfig.presencePenalty);
     expect(config.headroomTokens).toBe(defaultConfig.headroomTokens);
   });
+
+  test("distill flags and input files are captured", () => {
+    const opts = parseArgs(["-q", "root cause?", "--budget", "1200", "--think", "a.log", "b.log"]);
+    expect(opts.distillQuery).toBe("root cause?");
+    expect(opts.distillBudget).toBe(1200);
+    expect(opts.distillThink).toBe(true);
+    expect(opts.positionals).toEqual(["a.log", "b.log"]);
+  });
+
+  test("scout path hints are captured separately from positional args", () => {
+    const opts = parseArgs(["-q", "where?", "--paths", "src", "lib", "--no-think"]);
+    expect(opts.distillQuery).toBe("where?");
+    expect(opts.scoutPaths).toEqual(["src", "lib"]);
+    expect(opts.noThink).toBe(true);
+    expect(opts.positionals).toEqual([]);
+  });
 });
 
 describe("env-var parsing", () => {
@@ -95,6 +111,11 @@ describe("resolveProfile (model profiles)", () => {
   test("a model name containing 'qwen' resolves the Qwen profile", () => {
     const profile = resolveProfile("qwen36-27b-mtp:latest");
     expect(profile).toEqual({ temperature: 0.6, topP: 0.95, topK: 20, presencePenalty: 1.0, thinkBudgetChars: 6000 });
+  });
+
+  test("a model name containing 'gemma' resolves the Gemma profile", () => {
+    const profile = resolveProfile("gemma4:26b");
+    expect(profile).toEqual({ temperature: 1, topP: 0.95, topK: 64, presencePenalty: 0, thinkBudgetChars: 6000 });
   });
 
   test("matching is case-insensitive", () => {

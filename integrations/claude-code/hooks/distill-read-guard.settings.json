@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PROJECT_DIR}/integrations/claude-code/hooks/distill-read-guard.js",
+            "args": [],
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

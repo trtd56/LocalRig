@@ -70,6 +70,8 @@ export class Agent {
     // the same string to every task's agent so it stays byte-identical (Ollama's
     // prefix KV cache holds); a one-shot/REPL agent omits it and builds its own.
     systemPrompt?: string,
+    tools?: ToolDef[],
+    private forceThink?: boolean,
   ) {
     this.client = new OllamaClient(config.ollamaUrl, config.model);
     this.toolCtx = {
@@ -79,7 +81,7 @@ export class Agent {
       signal: this.abort.signal,
       report: { changedFiles: new Map(), commandsRun: [] },
     };
-    this.tools = createTools(config, this.toolCtx);
+    this.tools = tools ?? createTools(config, this.toolCtx);
     this.loopDetector = new LoopDetector(config.loopWarnAfter, config.loopAbortAfter);
     this.contextManager = new ContextManager(config, this.client);
     this.messages.push(this.stamp({ role: "system", content: systemPrompt ?? buildSystemPrompt(cwd, config) }));
@@ -139,7 +141,7 @@ export class Agent {
       // second interruption in a turn does the same before retrying.
       let response: ChatResponse;
       let interruptions = 0;
-      let think: boolean | undefined = wrapUp ? false : undefined;
+      let think: boolean | undefined = wrapUp ? false : this.forceThink;
       for (;;) {
         const turn = await this.streamTurn(think, interruptions);
         if (turn.kind === "user_abort") {

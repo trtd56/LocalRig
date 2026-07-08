@@ -14,6 +14,7 @@ import {
   restoreTranscript,
   ResumeError,
   saveSession,
+  evaluateKindGate,
   type SessionRecord,
 } from "../src/session.ts";
 import type { ChatMessage } from "../src/types.ts";
@@ -192,8 +193,34 @@ describe("feedback", () => {
     appendFeedback({ sessionId: "s3", verdict: "pass", createdAt: "t" });
     const stats = computeStats({ byKind: true });
     expect(stats.byKind).toEqual([
-      { kind: "(untagged)", graded: 1, pass: 1, fail: 0, rate: 100, avgDurationMs: 20_000 },
-      { kind: "rename", graded: 2, pass: 1, fail: 1, rate: 50, avgDurationMs: 20_000 },
+      {
+        kind: "(untagged)",
+        graded: 1,
+        pass: 1,
+        fail: 0,
+        rate: 100,
+        avgDurationMs: 20_000,
+        gate: {
+          status: "insufficient_data",
+          minGraded: 3,
+          minPassRate: 50,
+          reason: "need at least 3 graded runs before gating",
+        },
+      },
+      {
+        kind: "rename",
+        graded: 2,
+        pass: 1,
+        fail: 1,
+        rate: 50,
+        avgDurationMs: 20_000,
+        gate: {
+          status: "insufficient_data",
+          minGraded: 3,
+          minPassRate: 50,
+          reason: "need at least 3 graded runs before gating",
+        },
+      },
     ]);
   });
 
@@ -228,12 +255,20 @@ describe("feedback", () => {
     expect(doc.graded).toBe(4);
     expect(doc.rate).toBe(25);
     expect(rename.rate).toBe(100);
+    expect(doc.gate.status).toBe("block");
+    expect(rename.gate.status).toBe("allow");
 
     // The mechanical gate the SKILL/AGENTS guidance describes: skip a kind once
     // it has enough signal (graded >= 3) and fail is the majority (rate < 50).
-    const skipDelegation = (k: typeof doc) => k.graded >= 3 && k.rate !== null && k.rate < 50;
+    const skipDelegation = (k: typeof doc) => k.gate.status === "block";
     expect(skipDelegation(doc)).toBe(true);
     expect(skipDelegation(rename)).toBe(false);
+  });
+
+  test("evaluateKindGate returns an explicit status and reason", () => {
+    expect(evaluateKindGate(2, 0).status).toBe("insufficient_data");
+    expect(evaluateKindGate(3, 49).status).toBe("block");
+    expect(evaluateKindGate(3, 50).status).toBe("allow");
   });
 });
 

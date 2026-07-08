@@ -149,20 +149,23 @@ export class OllamaClient {
     options: ChatRequestOptions,
     signal: AbortSignal,
   ): Promise<string> {
+    const body: Record<string, unknown> = {
+      model: this.model,
+      stream: false,
+      think: options.think ?? false,
+      options: {
+        num_ctx: options.num_ctx,
+        num_predict: options.num_predict ?? 4096,
+        temperature: options.temperature ?? 0.2,
+      },
+      messages: messages.map(wireMessage),
+    };
+    if (options.format !== undefined) body.format = options.format;
+
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        model: this.model,
-        stream: false,
-        think: false,
-        options: {
-          num_ctx: options.num_ctx,
-          num_predict: options.num_predict ?? 4096,
-          temperature: options.temperature ?? 0.2,
-        },
-        messages: messages.map(wireMessage),
-      }),
+      body: JSON.stringify(body),
       signal,
       // stream:false means zero bytes until generation finishes — always
       // "idle" from Bun's 300s-timeout perspective (see chat() above).
@@ -172,8 +175,14 @@ export class OllamaClient {
       const text = await res.text().catch(() => "");
       throw new Error(`Ollama HTTP ${res.status}: ${text.slice(0, 500)}`);
     }
-    const data = (await res.json()) as { message?: { content?: string }; error?: string };
+    const data = (await res.json()) as {
+      message?: { content?: string };
+      prompt_eval_count?: number;
+      eval_count?: number;
+      error?: string;
+    };
     if (data.error) throw new Error(`Ollama error: ${data.error}`);
+    options.onUsage?.({ promptTokens: data.prompt_eval_count ?? 0, evalTokens: data.eval_count ?? 0 });
     return data.message?.content ?? "";
   }
 }

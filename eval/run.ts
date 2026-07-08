@@ -6,9 +6,11 @@
 //   bun run eval/run.ts --agent claude             # baseline via claude CLI
 //   bun run eval/run.ts --agent harness --task fix-bug,refactor
 //   bun run eval/run.ts --agent harness --keep     # keep workdirs for inspection
+//   bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r1
 //
 // summary-<agent>.json is merged per task across runs, so a --task run only
-// updates the entries for the tasks it executed.
+// updates the entries for the tasks it executed. With --run-id, writes
+// summary-<agent>.<run-id>.json instead (useful for n=3 measurement cells).
 
 import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
@@ -86,6 +88,21 @@ export const BATCHCLI_NUDGE = `This run is a delegation measurement: you MUST ro
 3. Verify each subtask cheaply (its \`changed_files\` / git diff / read touched files). If a subtask's \`status\` is not ok or its \`check\` failed, re-run that acceptance command yourself to confirm. Only if a delegated subtask is broken or incomplete may you fix the remaining issues yourself with minimal edits, or re-delegate just that subtask. Do not delegate the same subtask more than twice.
 4. Record a verdict FOR EACH subtask, keyed by its id: lh feedback <session_id> --task <id> pass|fail --source claude-code --notes "<short reason>".
 Never modify test files. Before your first \`lh batch\` call you may list files and read AT MOST two of them; reading every file in full is prohibited — the local agent explores the codebase itself, so pointing it at the paths and requirements is enough and you do not need to understand each subtask's solution first. Do not edit any file before at least one \`lh\` attempt has returned.`;
+
+/**
+ * System-prompt append for the `claude-scout` preprocessing arm. The task-facing
+ * prompt stays byte-identical to the baseline; this nudge only changes how the
+ * orchestrator gathers repository context before answering. Unlike delegation,
+ * scout is read-only and returns a citation-checked digest, so Claude still owns
+ * any final file edits required by the fixture.
+ */
+export const SCOUT_NUDGE = `This run is a preprocessing measurement: for repository-wide location or codebase exploration questions, you MUST use the local read-only scout before doing your own grep/read fan-out.
+1. Before reading many files yourself, run via Bash: lh scout -q "<specific repository question>" --json --cwd <absolute cwd> --kind scout --max-time 900
+   If useful, add --paths hints such as --paths src lib. Run it in the FOREGROUND with a Bash timeout of 1200000 ms. Do not use submit/wait; scout is synchronous.
+2. Parse the JSON digest. Treat it as a map, not truth: before editing or writing a final answer, read any cited ranges you rely on.
+3. If the digest has not_found:true, respect that unless a cheap follow-up grep/read disproves it. Do not invent unsupported citations.
+4. Record the verdict after the task: lh feedback <session_id> pass|fail --source claude-code --notes "<short reason>".
+Do not call lh -p or lh batch for this arm. Scout is read-only; you may still make the final requested edits yourself after reading the cited evidence.`;
 
 /**
  * System-prompt append for the `claude-delegate-async` arm. Same delegation-first
@@ -187,9 +204,13 @@ function isDelegateArm(agent: string): boolean {
   return agent.startsWith("claude-delegate");
 }
 
+function isPreprocessArm(agent: string): boolean {
+  return agent === "claude-scout";
+}
+
 /** True for any arm whose stdout is the `claude` result JSON (baseline + all delegate arms). */
 function isClaudeArm(agent: string): boolean {
-  return agent === "claude" || isDelegateArm(agent);
+  return agent === "claude" || isDelegateArm(agent) || isPreprocessArm(agent);
 }
 
 interface TaskSpec {
@@ -209,6 +230,7 @@ interface ClaudeUsageBreakdown {
 /** One local-side delegation, read back from a session record under LH_HOME. */
 interface DelegationMetric {
   sessionId: string;
+  kind?: string;
   status: string;
   turns: number;
   toolCalls: number;
@@ -217,6 +239,12 @@ interface DelegationMetric {
   durationMs: number;
   /** ErrorKind bucket (see src/types.ts); present only when the session errored. */
   errorKind?: string;
+  digestNotFound?: boolean;
+  digestCitationsDropped?: number;
+  digestCitationCount?: number;
+  digestParseFailed?: boolean;
+  digestCitedFiles?: string[];
+  citationRecall?: number;
 }
 
 /** One caller verdict, read back from feedback.jsonl under LH_HOME. */
@@ -291,6 +319,8 @@ interface TaskResult {
   workers?: WorkerMetric[];
   /** Mechanical backup count of worker sessions under ~/.claude/projects/<slug>/ (excludes the orchestrator's own session). */
   workerSessions?: number;
+  preprocessQualityFailed?: boolean;
+  preprocessQualityNotes?: string[];
 }
 
 function parseArgs() {
@@ -298,12 +328,14 @@ function parseArgs() {
   let agent = "harness";
   let only: Set<string> | undefined;
   let keep = false;
+  let runId: string | undefined;
   for (let i = 0; i < argv.length; i++) {
     if (argv[i] === "--agent") agent = argv[++i]!;
     else if (argv[i] === "--task") only = new Set(argv[++i]!.split(",").filter(Boolean));
     else if (argv[i] === "--keep") keep = true;
+    else if (argv[i] === "--run-id") runId = argv[++i];
   }
-  return { agent, only, keep };
+  return { agent, only, keep, runId };
 }
 
 function sha(file: string): string {
@@ -484,6 +516,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     else if (agent === "claude-delegate-haiku") args.push("--append-system-prompt", HAIKU_DELEGATE_NUDGE);
     else if (agent === "claude-delegate-pair-sync") args.push("--append-system-prompt", SYNC_PAIR_NUDGE);
     else if (agent === "claude-delegate-pair-async") args.push("--append-system-prompt", ASYNC_PAIR_NUDGE);
+    else if (agent === "claude-scout") args.push("--append-system-prompt", SCOUT_NUDGE);
     else if (isDelegateArm(agent)) throw new Error(`unknown delegate arm: ${agent} (no nudge defined)`);
     return { cmd: "claude", args };
   }
@@ -497,7 +530,90 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
  * delegated at all, or may have crashed mid-run) — never throws. Field names
  * mirror SessionRecord / FeedbackRecord in src/session.ts.
  */
-function collectDelegationMetrics(lhHome: string): {
+function asRecord(v: unknown): Record<string, unknown> | undefined {
+  return typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
+}
+
+function expectedScoutCitationFiles(taskName: string): string[] | undefined {
+  if (taskName === "scout-locate") {
+    return [
+      "src/core/retry-policy.ts",
+      "src/runtime/pipeline.ts",
+      "src/workers/email.ts",
+      "src/workers/export.ts",
+      "src/workers/webhook.ts",
+    ];
+  }
+  if (taskName === "scout-honest") return [];
+  return undefined;
+}
+
+function normalizeCitationFile(file: string, cwd: string | undefined): string {
+  const withoutDot = file.startsWith("./") ? file.slice(2) : file;
+  const rel = cwd && path.isAbsolute(withoutDot) ? path.relative(cwd, withoutDot) : withoutDot;
+  return path.normalize(rel).replace(/\\/g, "/");
+}
+
+function digestMetrics(result: string | undefined, taskName: string, cwd?: string): Partial<DelegationMetric> {
+  if (!result) return {};
+  try {
+    const digest = asRecord(JSON.parse(result));
+    if (!digest) return {};
+    const citations = Array.isArray(digest.citations) ? digest.citations : [];
+    const citedFiles = new Set<string>();
+    for (const c of citations) {
+      const rec = asRecord(c);
+      if (typeof rec?.file === "string") citedFiles.add(normalizeCitationFile(rec.file, cwd));
+    }
+    const expected = expectedScoutCitationFiles(taskName);
+    const citationRecall =
+      expected && expected.length > 0
+        ? expected.filter((file) => citedFiles.has(file)).length / expected.length
+        : expected
+          ? 1
+          : undefined;
+    return {
+      digestNotFound: typeof digest.not_found === "boolean" ? digest.not_found : undefined,
+      digestCitationsDropped:
+        typeof digest.citations_dropped === "number" && Number.isFinite(digest.citations_dropped)
+          ? digest.citations_dropped
+          : undefined,
+      digestCitationCount: citations.length,
+      digestParseFailed: digest.parse_failed === true,
+      digestCitedFiles: [...citedFiles].sort(),
+      citationRecall,
+    };
+  } catch {
+    return {};
+  }
+}
+
+function scoutQualityNotes(taskName: string, delegations: DelegationMetric[]): string[] {
+  const scoutRuns = delegations.filter((d) => d.kind === "scout");
+  if (scoutRuns.length === 0) return [];
+  const notes: string[] = [];
+  if (taskName === "scout-honest") {
+    for (const d of scoutRuns) {
+      if (d.digestNotFound !== true) notes.push(`${d.sessionId}: scout-honest digest did not report not_found:true`);
+      if ((d.digestCitationsDropped ?? 0) > 0 && d.digestNotFound === false) {
+        notes.push(`${d.sessionId}: dropped citations with not_found:false`);
+      }
+    }
+  }
+  if (taskName === "scout-locate") {
+    for (const d of scoutRuns) {
+      if ((d.citationRecall ?? 0) < 2 / 3) {
+        notes.push(`${d.sessionId}: citation recall ${d.citationRecall ?? 0} below 2/3`);
+      }
+      if ((d.digestCitationsDropped ?? 0) > 0) {
+        notes.push(`${d.sessionId}: dropped ${d.digestCitationsDropped} citation(s)`);
+      }
+    }
+  }
+  return notes;
+}
+
+function collectDelegationMetrics(lhHome: string, taskName: string): {
   delegated: boolean;
   delegations: DelegationMetric[];
   feedback: FeedbackMetric[];
@@ -511,6 +627,7 @@ function collectDelegationMetrics(lhHome: string): {
         const rec = JSON.parse(fs.readFileSync(path.join(sessionsDir, f), "utf8")) as Partial<SessionRecord>;
         delegations.push({
           sessionId: rec.id ?? f.slice(0, -".json".length),
+          kind: rec.kind,
           status: rec.status ?? "",
           turns: rec.turns ?? 0,
           toolCalls: rec.toolCalls ?? 0,
@@ -518,6 +635,7 @@ function collectDelegationMetrics(lhHome: string): {
           completionTokens: rec.tokens?.completion ?? 0,
           durationMs: rec.durationMs ?? 0,
           errorKind: rec.errorKind,
+          ...digestMetrics(rec.result, taskName, rec.cwd),
         });
       } catch {
         // Skip an unreadable/partial session file rather than losing the rest.
@@ -661,13 +779,15 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
   // not `lh` — so any session appearing here means the orchestrator wrongly
   // called `lh`, which collectDelegationMetrics surfaces as visible contamination.
   const isDelegate = isDelegateArm(agent);
+  const isPreprocess = isPreprocessArm(agent);
   const isHaiku = agent === "claude-delegate-haiku";
   const env: NodeJS.ProcessEnv = { ...process.env };
   let lhHome: string | undefined;
-  if (isDelegate) {
+  if (isDelegate || isPreprocess) {
     // Suffix keeps arms from sharing an LH_HOME (claude-delegate → <task>,
     // claude-delegate-haiku → <task>-haiku).
-    lhHome = path.join(LH_HOME_ROOT, spec.name + agent.slice("claude-delegate".length));
+    const suffix = isDelegate ? agent.slice("claude-delegate".length) : "-scout";
+    lhHome = path.join(LH_HOME_ROOT, spec.name + suffix);
     fs.rmSync(lhHome, { recursive: true, force: true });
     fs.mkdirSync(lhHome, { recursive: true });
     env.LH_HOME = lhHome;
@@ -691,7 +811,7 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
 
   const [vcmd, ...vargs] = spec.verify.split(" ") as [string, ...string[]];
   const verify = await run(vcmd, vargs, workdir, 120_000);
-  const passed = verify.code === 0 && testFilesModified.length === 0;
+  let passed = verify.code === 0 && testFilesModified.length === 0;
 
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
   fs.writeFileSync(path.join(RESULTS_DIR, `${agent}-${spec.name}.log`), agentRun.output);
@@ -703,14 +823,20 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
   // `delegated` from workers, not from lh sessions — a non-empty `delegations`
   // there means contamination (orchestrator wrongly called `lh`).
   let delegation: Partial<TaskResult> | undefined;
-  if (isDelegate && lhHome) {
-    const lhSide = collectDelegationMetrics(lhHome);
+  if ((isDelegate || isPreprocess) && lhHome) {
+    const lhSide = collectDelegationMetrics(lhHome, spec.name);
+    const preprocessQualityNotes = isPreprocess ? scoutQualityNotes(spec.name, lhSide.delegations) : [];
+    if (preprocessQualityNotes.length > 0) passed = false;
     if (isHaiku) {
       const workers = collectWorkerMetrics(workdir, spec.name);
       const workerSessions = countWorkerSessions(workdirReal, extractSessionId(agentRun.stdout));
       delegation = { ...lhSide, workers, workerSessions, delegated: workers.length > 0 };
     } else {
-      delegation = lhSide;
+      delegation = {
+        ...lhSide,
+        preprocessQualityFailed: preprocessQualityNotes.length > 0 || undefined,
+        preprocessQualityNotes: preprocessQualityNotes.length > 0 ? preprocessQualityNotes : undefined,
+      };
     }
   }
 
@@ -738,13 +864,18 @@ async function runTask(agent: string, taskDir: string, keep: boolean): Promise<T
  * for tasks that already finished — see REPORT.md / the investigation into
  * summary-claude.json for a real instance of that data loss.
  */
-function writeSummary(agent: string, newResults: TaskResult[]): void {
+function summaryPath(agent: string, runId?: string): string {
+  const safeRunId = runId?.replace(/[^A-Za-z0-9_.-]/g, "-");
+  return path.join(RESULTS_DIR, `summary-${agent}${safeRunId ? `.${safeRunId}` : ""}.json`);
+}
+
+function writeSummary(agent: string, newResults: TaskResult[], runId?: string): void {
   fs.mkdirSync(RESULTS_DIR, { recursive: true });
-  const summaryPath = path.join(RESULTS_DIR, `summary-${agent}.json`);
+  const outPath = summaryPath(agent, runId);
   let merged: TaskResult[] = [];
-  if (fs.existsSync(summaryPath)) {
+  if (fs.existsSync(outPath)) {
     try {
-      merged = JSON.parse(fs.readFileSync(summaryPath, "utf8"));
+      merged = JSON.parse(fs.readFileSync(outPath, "utf8"));
     } catch {
       merged = [];
     }
@@ -752,11 +883,11 @@ function writeSummary(agent: string, newResults: TaskResult[]): void {
   const newNames = new Set(newResults.map((r) => r.task));
   merged = merged.filter((r) => !newNames.has(r.task)).concat(newResults);
   merged.sort((a, b) => a.task.localeCompare(b.task));
-  fs.writeFileSync(summaryPath, JSON.stringify(merged, null, 2));
+  fs.writeFileSync(outPath, JSON.stringify(merged, null, 2));
 }
 
 async function main() {
-  const { agent, only, keep } = parseArgs();
+  const { agent, only, keep, runId } = parseArgs();
   const tasks = fs
     .readdirSync(TASKS_DIR)
     .filter((t) => fs.existsSync(path.join(TASKS_DIR, t, "task.json")))
@@ -771,7 +902,7 @@ async function main() {
   for (const t of tasks) {
     const result = await runTask(agent, path.join(TASKS_DIR, t), keep);
     results.push(result);
-    writeSummary(agent, [result]);
+    writeSummary(agent, [result], runId);
   }
 
   console.log(`\n=== summary (${agent}) ===`);

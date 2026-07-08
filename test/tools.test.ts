@@ -4,7 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { defaultConfig, type Config } from "../src/config.ts";
 import type { ToolContext, ToolDef } from "../src/types.ts";
-import { createTools, renderTodos } from "../src/tools/registry.ts";
+import { createScoutTools, createTools, renderTodos } from "../src/tools/registry.ts";
 import { globToRegExp } from "../src/tools/glob.ts";
 import { manualGrep } from "../src/tools/grep.ts";
 
@@ -676,5 +676,16 @@ describe("createTools", () => {
       expect(t.parameters.type).toBe("object");
       expect(Array.isArray(t.parameters.required)).toBe(true);
     }
+  });
+});
+
+describe("createScoutTools", () => {
+  test("exposes only read-only exploration tools", () => {
+    const dir = subdir("registry-scout");
+    const config: Config = { ...defaultConfig };
+    const ctx = makeCtx(dir);
+    const tools = createScoutTools(config, ctx);
+    expect(tools.map((t) => t.name).sort()).toEqual(["glob", "grep", "read"]);
+    expect(tools.every((t) => t.mutating === false)).toBe(true);
   });
 });

@@ -26,3 +26,8 @@ export function createTools(config: Config, _ctx: ToolContext): ToolDef[] {
     createTodoTool(config),
   ];
 }
+
+/** Read-only exploration profile for `lh scout`. */
+export function createScoutTools(config: Config, _ctx: ToolContext): ToolDef[] {
+  return [createReadTool(config), createGrepTool(config), createGlobTool(config)];
+}

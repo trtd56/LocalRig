@@ -60,12 +60,24 @@ const QWEN_PROFILE: ModelProfile = {
   thinkBudgetChars: 6000,
 };
 
-// Model name (case-insensitive substring) → profile. First match wins.
-const MODEL_PROFILES: { pattern: string; profile: ModelProfile }[] = [{ pattern: "qwen", profile: QWEN_PROFILE }];
+// Gemma 4 26B (Ollama) defaults observed from the Modelfile: 1 / 0.95 / 64.
+// Keep repetition penalties neutral; the full harness run used these values.
+const GEMMA_PROFILE: ModelProfile = {
+  temperature: 1,
+  topP: 0.95,
+  topK: 64,
+  presencePenalty: 0,
+  thinkBudgetChars: 6000,
+};
 
-// Fallback for a model matching no pattern above. Same values as Qwen3.6 (the
-// only validated profile so far) so an unrecognized model stays on the safe,
-// already-tested settings rather than some untested "neutral" default.
+// Model name (case-insensitive substring) → profile. First match wins.
+const MODEL_PROFILES: { pattern: string; profile: ModelProfile }[] = [
+  { pattern: "qwen", profile: QWEN_PROFILE },
+  { pattern: "gemma", profile: GEMMA_PROFILE },
+];
+
+// Fallback for a model matching no pattern above. Keep the conservative Qwen3.6
+// settings so an unrecognized model stays on the original validated profile.
 const DEFAULT_PROFILE: ModelProfile = QWEN_PROFILE;
 
 export function resolveProfile(model: string): ModelProfile {

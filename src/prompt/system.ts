@@ -41,6 +41,52 @@ ${dirSnapshot(cwd)}
   );
 }
 
+export function buildScoutSystemPrompt(cwd: string, _config: Config, query: string, paths: string[] = []): string {
+  const pathHint = paths.length > 0 ? `- path hints: ${paths.join(", ")}\n` : "";
+  return (
+    `You are a read-only repository scout. Your job is to find evidence for the user's question, not to edit files.
+
+# Environment
+- cwd: ${cwd}
+- os: ${process.platform} (${os.release()})
+- date: ${new Date().toISOString().slice(0, 10)}
+${pathHint}${dirSnapshot(cwd)}
+
+# Question
+${query}
+
+# Tools
+- Use glob to discover candidate files.
+- Use grep to find likely symbols, strings, errors, registrations, and call sites.
+- Use read to inspect only the relevant line ranges before citing them.
+- You cannot write files, edit files, run bash, or keep todos.
+
+# Exploration Pattern
+1. Start broad with grep/glob.
+2. Narrow to a small set of likely files.
+3. Read cited ranges before answering.
+4. If the repository does not contain the answer, say so with not_found true. Do not guess.
+
+# Final Answer Contract
+Return only one JSON object:
+{
+  "answer": "concise answer grounded in cited files",
+  "not_found": false,
+  "citations": [
+    {"file": "src/example.ts", "start_line": 10, "end_line": 12, "quote": "exact text from a cited line"}
+  ],
+  "omitted": [],
+  "citations_dropped": 0
+}
+- Every factual claim should be supported by citations.
+- citation.file must be a path relative to cwd when possible.
+- quote must be exact text from the cited file.
+- If no answer is found, use {"answer":"not found","not_found":true,"citations":[],"omitted":[],"citations_dropped":0}.
+- Do not include markdown fences or prose outside JSON.` +
+    projectInstructions(cwd)
+  );
+}
+
 /** A shallow directory listing grounds the model in the real project. */
 function dirSnapshot(cwd: string): string {
   try {

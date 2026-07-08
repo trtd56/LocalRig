@@ -9,7 +9,7 @@ description: Delegate small, mechanical, verifiable coding tasks to LocalRig via
 
 ## When to delegate
 
-**First, check the track record.** Before deciding, read `lh stats --by-kind --json` and find the entry for the `--kind` you would tag this task with. If that kind has `graded >= 3` and its pass `rate` is below 50 (fail is the majority), do NOT delegate: do the task yourself, or sharpen the work order — concrete file paths, an explicit definition of done, a `--check` command — and only then try again. With fewer than 3 graded runs the signal is too thin to act on; fall back to the criteria below.
+**First, check the track record.** Before deciding, read `lh stats --by-kind --json` and find the entry for the `--kind` you would tag this task with. If that kind's `gate.status` is `"block"`, do NOT delegate: do the task yourself, or sharpen the work order — concrete file paths, an explicit definition of done, a `--check` command — and only then try again. The current gate blocks when `graded >= 3` and pass `rate < 50`; with fewer than 3 graded runs the signal is too thin to act on, so fall back to the criteria below.
 
 Delegate when ALL of these hold:
 - The task is mechanical and well-scoped: single-file bugfix with a failing test, boilerplate generation, rename/move, adding a test that mirrors an existing pattern, doc/comment updates, config tweaks.
@@ -61,6 +61,33 @@ EOF
 - Progress persists incrementally: if your session dies mid-batch or right after it, completed tasks' work and check results survive — read the session JSON (`lh sessions`, `lh poll <id> --json`) and record feedback afterwards instead of redoing the work.
 - Do not hand-assemble one mega-prompt telling a single local agent to do everything, and do not call `lh -p` once per subtask — measured same-day, the hand-rolled sequential pattern cost ≈ 1.4× the batch call and lost to just doing the tasks yourself.
 
+## Preprocess large inputs — `lh distill`
+
+Use `lh distill` when you are about to read or paste at least 1000 lines or 64KB of logs/files and the job is semantic selection, not editing. It asks the local model to read the large input and return a small citation-checked digest:
+
+```bash
+bun test 2>&1 | lh distill -q "What is the root cause of the failing tests?" --json
+lh distill -q "Where is retry behavior implemented?" src/**/*.ts --json
+```
+
+- `-q/--query` is required. Do not ask for generic summaries; state the extraction question.
+- Use it for large test/build logs, trace triage, or finding relevant passages across many files. If `grep`, `jq`, `head`, or a small script can select the information mechanically, use that instead.
+- Before using it, read `lh stats --by-kind --json`; if the `distill` entry has `gate.status:"block"`, do not use distill for this task.
+- The digest is a map, not ground truth. Before editing or relying on a claim, read the cited file range yourself.
+- Citations are mechanically checked: a hallucinated quote is dropped and counted in `citations_dropped`. Treat a high drop count as a warning that recall may be poor.
+- Respect `not_found: true`; do not turn it into a fabricated answer.
+- Record usefulness with `lh feedback <session_id> pass|fail --source claude-code --notes "..."`. `kind` defaults to `distill`, so `lh stats --by-kind` can gate future use.
+
+## Scout a repository — `lh scout`
+
+Use `lh scout` when you need read-only codebase exploration and you do not yet know which files to read. It gives the local model only `read`, `grep`, and `glob`, then returns the same citation-checked digest shape as `distill`:
+
+```bash
+lh scout -q "Where is retry behavior defined, registered, and called?" --paths src --json
+```
+
+Use the three-way rule: `grep`/scripts for mechanical filtering, `distill` when the input files are already known, `scout` when finding the relevant files is the task. The P2 trigger for scout is a repository question where you expect to inspect five or more files yourself. Before using it, read `lh stats --by-kind --json`; if the `scout` entry has `gate.status:"block"`, do not use scout for this task. Treat scout output as a map: read cited ranges before relying on them, respect `not_found: true`, and record usefulness with `lh feedback <session_id> pass|fail --source claude-code --notes "..."`. `kind` defaults to `scout`.
+
 ## Verify — never trust the result blindly
 
 Before using or committing anything the local agent produced, and **before you record a `pass`**:
@@ -93,4 +120,4 @@ lh -p "The first line must be exactly `FIXED:`. Fix only that." --resume <sessio
 
 ## Calibrate
 
-`lh stats --by-kind` shows pass rate and average duration by task kind (add `--json` for a machine-readable `rate` per kind — the same track record you consult before delegating, see "When to delegate"). Check it after runs too, to catch a kind whose reliability is slipping and stop delegating it. `lh sessions` lists recent runs when you lost a session id.
+`lh stats --by-kind` shows pass rate, average duration, and gate status by task kind (add `--json` for machine-readable `rate` and `gate.status` per kind — the same track record you consult before delegating or preprocessing, see "When to delegate"). Check it after runs too, to catch a kind whose reliability is slipping and stop delegating it. `lh sessions` lists recent runs when you lost a session id.

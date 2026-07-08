@@ -112,6 +112,10 @@ export interface ChatRequestOptions {
   presence_penalty?: number;
   /** Toggle the model's reasoning phase. Sent only when explicitly set. */
   think?: boolean;
+  /** Ollama structured-output format, usually a JSON schema. */
+  format?: unknown;
+  /** Non-streaming completion usage callback. */
+  onUsage?: (usage: { promptTokens: number; evalTokens: number }) => void;
 }
 
 export interface ChatChunk {

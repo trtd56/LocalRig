@@ -5,7 +5,8 @@ import { describe, expect, test } from "bun:test";
 import * as os from "node:os";
 import { Agent, shouldInterruptThinking } from "../src/agent.ts";
 import { defaultConfig } from "../src/config.ts";
-import type { ChatMessage } from "../src/types.ts";
+import { buildScoutSystemPrompt } from "../src/prompt/system.ts";
+import type { ChatMessage, ToolDef } from "../src/types.ts";
 
 describe("shouldInterruptThinking", () => {
   const base = { thinkingChars: 10_000, budgetChars: 6000, sawOutput: false, interruptionsSoFar: 0 };
@@ -51,6 +52,18 @@ describe("Agent system prompt", () => {
     const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false);
     expect(agent.getMessages()[0]!.content).toContain("You are a coding agent");
   });
+
+  test("accepts an injected tool set without changing the initial transcript", () => {
+    const tool: ToolDef = {
+      name: "read",
+      description: "fake read",
+      parameters: { type: "object", properties: {}, required: [] },
+      mutating: false,
+      execute: async () => ({ ok: true, output: "ok" }),
+    };
+    const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SYS", [tool], true);
+    expect(agent.getMessages()).toEqual([{ role: "system", content: "SYS", _seq: 0 }]);
+  });
 });
 
 describe("Agent.restore", () => {
@@ -70,5 +83,18 @@ describe("Agent.restore", () => {
     expect(msgs).toHaveLength(3);
     expect(msgs[0]!.content).toBe("restored system prompt");
     expect(msgs[2]!.content).toBe("did it");
+  });
+});
+
+describe("buildScoutSystemPrompt", () => {
+  test("describes read-only exploration and digest JSON requirements", () => {
+    const prompt = buildScoutSystemPrompt(os.tmpdir(), { ...defaultConfig }, "where is retry?", ["src"]);
+    expect(prompt).toContain("read-only repository scout");
+    expect(prompt).toContain("Use glob");
+    expect(prompt).toContain("Use grep");
+    expect(prompt).toContain("Use read");
+    expect(prompt).toContain("not_found true");
+    expect(prompt).toContain('"citations"');
+    expect(prompt).toContain("path hints: src");
   });
 });

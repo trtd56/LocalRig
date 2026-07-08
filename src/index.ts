@@ -18,9 +18,23 @@ import {
 } from "./batch.ts";
 import { buildCheckRepairPrompt, canRetryCheck, runCheckCommand } from "./check.ts";
 import { applyProfile, defaultConfig, PROFILE_FIELD_ENV, type Config, type ProfileField } from "./config.ts";
-import { buildSystemPrompt } from "./prompt/system.ts";
+import {
+  distill,
+  DistillConfigError,
+  DistillModelError,
+  parseDigest,
+  verifyCitations,
+  type Digest,
+  type DistillCompleteResult,
+  type DistillInput,
+} from "./distill.ts";
+import { estimateTokens } from "./context/tokens.ts";
+import { OllamaClient } from "./provider/ollama.ts";
+import { buildScoutSystemPrompt, buildSystemPrompt } from "./prompt/system.ts";
+import { createScoutTools } from "./tools/registry.ts";
+import { isBinary } from "./tools/read.ts";
 import { createRenderer, c } from "./ui/render.ts";
-import type { AgentEvent, ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
+import type { AgentEvent, ChatMessage, ChatRequestOptions, ErrorKind, RunReport, RunStatus } from "./types.ts";
 import {
   appendFeedback,
   type BatchStatus,
@@ -54,6 +68,12 @@ Usage:
   lh batch --tasks <file|-> [--json]
                             run several independent tasks in one session (one
                             Agent, shared cwd); per-task status/check/report
+  lh distill -q "question" [files...] [--json]
+                            extract a citation-checked digest from large files
+                            or stdin before sending it to an upstream agent
+  lh scout -q "question" [--paths src/ lib/] [--json]
+                            read-only repository scout: find relevant files and
+                            return a citation-checked digest
   lh wait <id> [--timeout 1200] [--json]
                             wait for a submitted session to finish
   lh poll <id> [--json]     inspect a submitted session without blocking
@@ -99,6 +119,17 @@ Batch flags:
                             task clobbered its work) is downgraded to check_failed
                             with "regressed": true. Grade with:
                             lh feedback <id> --task <task-id> pass|fail
+Distill flags:
+  -q, --query TEXT          required extraction question
+  --budget TOKENS           target digest output budget (default: 2000)
+  --think                   allow model thinking for this extraction (default off)
+Scout flags:
+  -q, --query TEXT          required repository question
+  --paths PATH...           optional search-scope hints for the scout prompt
+                            default loop budget: max-iterations 20, max-time 900s
+                            unless explicitly overridden
+  --think / --no-think      thinking is on by default for scout; --no-think
+                            disables it for comparison runs
   --resume ID               continue a saved session (one-shot only): restore
                             its transcript, append the prompt as a follow-up,
                             and resume the agent loop. Records resumed_from and
@@ -118,6 +149,7 @@ interface CliOptions {
   quiet: boolean;
   cwd?: string;
   permissionModeSet: boolean;
+  maxIterationsSet: boolean;
   maxTimeSet: boolean;
   checkCommand?: string;
   checkRetries: number;
@@ -125,6 +157,12 @@ interface CliOptions {
   sessionId?: string;
   resumeFrom?: string;
   tasksFile?: string;
+  distillQuery?: string;
+  distillBudget: number;
+  distillThink: boolean;
+  scoutPaths: string[];
+  noThink: boolean;
+  positionals: string[];
 }
 
 export function parseArgs(argv: string[]): CliOptions {
@@ -135,8 +173,14 @@ export function parseArgs(argv: string[]): CliOptions {
     json: false,
     quiet: false,
     permissionModeSet: false,
+    maxIterationsSet: false,
     maxTimeSet: false,
     checkRetries: 2,
+    distillBudget: 2000,
+    distillThink: false,
+    scoutPaths: [],
+    noThink: false,
+    positionals: [],
   };
   // Fields already pinned by an env var baked into defaultConfig at load time.
   // --model must not clobber these when it re-resolves a profile for the new
@@ -171,6 +215,7 @@ export function parseArgs(argv: string[]): CliOptions {
         break;
       case "--max-iterations":
         config.maxIterations = Number(argv[++i]);
+        opts.maxIterationsSet = true;
         break;
       case "--max-time":
         config.maxTimeMs = Number(argv[++i]) * 1000;
@@ -204,6 +249,24 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--tasks":
         opts.tasksFile = argv[++i];
         break;
+      case "-q":
+      case "--query":
+        opts.distillQuery = argv[++i];
+        break;
+      case "--budget":
+        opts.distillBudget = Number(argv[++i]);
+        break;
+      case "--think":
+        opts.distillThink = true;
+        break;
+      case "--no-think":
+        opts.noThink = true;
+        break;
+      case "--paths":
+        while (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("-")) {
+          opts.scoutPaths.push(argv[++i]!);
+        }
+        break;
       case "--json":
         opts.json = true;
         break;
@@ -227,15 +290,23 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--help":
         console.log(HELP);
         process.exit(0);
+        break;
+      default:
+        if (!a.startsWith("-")) opts.positionals.push(a);
+        break;
     }
   }
   return opts;
 }
 
 async function readStdin(): Promise<string> {
+  return (await readStdinRaw()).trim();
+}
+
+async function readStdinRaw(): Promise<string> {
   const chunks: Buffer[] = [];
   for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
-  return Buffer.concat(chunks).toString("utf8").trim();
+  return Buffer.concat(chunks).toString("utf8");
 }
 
 // ---------- subcommands ----------
@@ -337,7 +408,7 @@ function cmdStats(argv: string[]): number {
     console.log("by kind:");
     for (const k of stats.byKind) {
       console.log(
-        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${k.rate ?? 0}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s`,
+        `  ${k.kind.padEnd(12)} ${k.graded} graded, pass ${k.pass} / fail ${k.fail}, ${k.rate ?? 0}% pass, avg ${Math.round(k.avgDurationMs / 1000)}s, gate ${k.gate.status}`,
       );
     }
   }
@@ -820,11 +891,414 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   return statusExitCode(status);
 }
 
+// ---------- distill ----------
+
+export interface DistillCliDeps {
+  readFileBuffer?: (file: string) => Buffer;
+  readStdin?: () => Promise<string>;
+  complete?: (messages: ChatMessage[], options: ChatRequestOptions) => Promise<DistillCompleteResult>;
+  now?: () => number;
+}
+
+function emitDistillConfigError(json: boolean, message: string, warnings: string[] = []): number {
+  if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind, warnings }));
+  else process.stderr.write(c.red(`error: ${message}`) + "\n");
+  return 1;
+}
+
+function distillForJson(record: SessionRecord, warnings: string[] = []) {
+  return {
+    session_id: record.id,
+    status: record.status,
+    digest: record.result ? JSON.parse(record.result) : undefined,
+    warnings,
+    error: record.error,
+    error_kind: record.errorKind,
+    duration_ms: record.durationMs,
+    turns: record.turns,
+    tokens: record.tokens,
+    model: record.model,
+    cwd: record.cwd,
+    kind: record.kind,
+    feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<digest useful? cited ranges verified?>"`,
+  };
+}
+
+function displayPath(cwd: string, file: string): string {
+  const abs = path.resolve(cwd, file);
+  const rel = path.relative(cwd, abs);
+  return rel && !rel.startsWith("..") ? rel : abs;
+}
+
+function loadDistillFile(cwd: string, file: string, readFileBuffer: (file: string) => Buffer): DistillInput | string {
+  const abs = path.resolve(cwd, file);
+  const label = displayPath(cwd, file);
+  let buf: Buffer;
+  try {
+    buf = readFileBuffer(abs);
+  } catch (err) {
+    return `cannot read ${file}: ${err instanceof Error ? err.message : String(err)}`;
+  }
+  if (isBinary(buf)) return `skipped binary file: ${label}`;
+  const text = buf.toString("utf8");
+  const longLine = text.split("\n").find((line) => line.length > 500_000);
+  if (longLine !== undefined) return `skipped huge single-line file: ${label}`;
+  return { file: label, text };
+}
+
+function stdinHasData(): boolean {
+  if (process.stdin.isTTY) return false;
+  try {
+    const st = fs.fstatSync(0);
+    return st.isFIFO() || st.isFile() || st.isSocket();
+  } catch {
+    return process.stdin.isTTY === false;
+  }
+}
+
+export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Promise<number> {
+  const opts = parseArgs(argv);
+  const json = opts.json;
+  const query = opts.distillQuery;
+  if (opts.resumeFrom !== undefined) return emitDistillConfigError(json, "distill does not support --resume");
+  if (!query || !query.trim()) return emitDistillConfigError(json, "distill requires -q/--query");
+  const budget = Math.floor(opts.distillBudget);
+  if (!Number.isFinite(opts.distillBudget) || budget < 1) {
+    return emitDistillConfigError(json, "--budget must be an integer >= 1");
+  }
+
+  const { config } = opts;
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const readFileBuffer = deps.readFileBuffer ?? ((file: string) => fs.readFileSync(file));
+  const readPipe = deps.readStdin ?? readStdinRaw;
+  const inputs: DistillInput[] = [];
+  const warnings: string[] = [];
+
+  for (const file of opts.positionals) {
+    const loaded = loadDistillFile(cwd, file, readFileBuffer);
+    if (typeof loaded === "string") warnings.push(loaded);
+    else inputs.push(loaded);
+  }
+
+  const shouldReadStdin = deps.readStdin !== undefined || stdinHasData();
+  if (shouldReadStdin) {
+    const stdin = await readPipe();
+    if (stdin.length > 0) inputs.push({ file: "(stdin)", text: stdin });
+  }
+
+  if (warnings.length > 0 && !opts.quiet && !json) {
+    for (const warning of warnings) process.stderr.write(c.yellow(`warning: ${warning}`) + "\n");
+  }
+  if (inputs.length === 0) return emitDistillConfigError(json, "distill found no readable input", warnings);
+
+  const sessionId = opts.sessionId ?? newSessionId();
+  const started = deps.now?.() ?? Date.now();
+  const abort = new AbortController();
+  let timedOut = false;
+  let interrupted = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (config.maxTimeMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, config.maxTimeMs);
+  }
+  const onSigint = () => {
+    interrupted = true;
+    abort.abort();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  if (deps.complete === undefined) process.on("SIGINT", onSigint);
+
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  let turns = 0;
+  const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
+    turns++;
+    if (deps.complete) return deps.complete(messages, options);
+    let usage = { promptTokens: 0, evalTokens: 0 };
+    const text = await client!.complete(
+      messages,
+      {
+        ...options,
+        onUsage: (u) => {
+          usage = u;
+          options.onUsage?.(u);
+        },
+      },
+      abort.signal,
+    );
+    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+  };
+
+  let result = "";
+  let status: RunStatus = "error";
+  let error: string | undefined;
+  let errorKind: ErrorKind | undefined;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  try {
+    const out = await distill(
+      {
+        query,
+        inputs,
+        numCtx: config.numCtx,
+        budget,
+        think: opts.distillThink,
+      },
+      { complete, estimator: estimateTokens },
+    );
+    result = JSON.stringify(out.digest, null, 2);
+    promptTokens = out.promptTokens;
+    completionTokens = out.evalTokens;
+    status = "ok";
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
+    errorKind = err instanceof DistillConfigError ? "config" : err instanceof DistillModelError ? "ollama_error" : classifyError(error);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (deps.complete === undefined) process.off("SIGINT", onSigint);
+  }
+
+  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date(started).toISOString(),
+    cwd,
+    model: config.model,
+    prompt: query,
+    kind: opts.kind ?? "distill",
+    status,
+    result,
+    error,
+    errorKind,
+    durationMs,
+    turns,
+    toolCalls: 0,
+    tokens: { prompt: promptTokens, completion: completionTokens },
+    report: { changedFiles: [], commandsRun: [] },
+  };
+  saveSession(record);
+
+  if (json) console.log(JSON.stringify(distillForJson(record, warnings)));
+  else {
+    if (result) process.stdout.write(result + "\n");
+    if (error) process.stderr.write(c.red(`error: ${error}`) + "\n");
+    process.stderr.write(
+      c.dim(`session ${sessionId} (${status}, ${Math.round(durationMs / 1000)}s) — grade it: lh feedback ${sessionId} pass|fail`) + "\n",
+    );
+  }
+  return statusExitCode(status);
+}
+
+// ---------- scout ----------
+
+export interface ScoutAgent {
+  lastRunStatus: RunStatus;
+  run(input: string): Promise<string>;
+  interrupt(): void;
+  getMessages(): readonly ChatMessage[];
+  getReport(): RunReport;
+}
+
+export interface ScoutCliDeps {
+  createAgent?: (systemPrompt: string, onEvent: (e: AgentEvent) => void, think: boolean, config: Config) => ScoutAgent;
+  readFile?: (file: string) => string;
+  now?: () => number;
+}
+
+type ScoutDigest = Digest & {
+  turns: number;
+  parse_failed?: boolean;
+  raw_text?: string;
+};
+
+function emitScoutConfigError(json: boolean, message: string): number {
+  if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+  else process.stderr.write(c.red(`error: ${message}`) + "\n");
+  return 1;
+}
+
+function scoutForJson(record: SessionRecord) {
+  return {
+    session_id: record.id,
+    status: record.status,
+    digest: record.result ? JSON.parse(record.result) : undefined,
+    error: record.error,
+    error_kind: record.errorKind,
+    duration_ms: record.durationMs,
+    turns: record.turns,
+    tool_calls: record.toolCalls,
+    tokens: record.tokens,
+    model: record.model,
+    cwd: record.cwd,
+    kind: record.kind,
+    feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<scout useful? cited ranges verified?>"`,
+  };
+}
+
+function readCitationFile(cwd: string, file: string, readFile: (file: string) => string): string {
+  const target = path.isAbsolute(file) ? file : path.resolve(cwd, file);
+  return readFile(target);
+}
+
+function evidenceCheckedScoutDigest(
+  digest: Digest,
+  cwd: string,
+  readFile: (file: string) => string,
+  turns: number,
+): ScoutDigest {
+  const checked = verifyCitations(digest.citations, (file) => readCitationFile(cwd, file, readFile));
+  const out: ScoutDigest = {
+    ...digest,
+    citations: checked.verified,
+    citations_dropped: digest.citations_dropped + checked.dropped.length,
+    turns,
+  };
+  if (!out.not_found && out.answer.trim() && out.citations.length === 0) {
+    out.omitted = [
+      ...out.omitted,
+      "model returned an answer without any verified citations; treat the answer as unsupported",
+    ];
+  }
+  return out;
+}
+
+function parseFailedScoutDigest(text: string, error: string | undefined, turns: number): ScoutDigest {
+  return {
+    answer: text,
+    not_found: false,
+    citations: [],
+    omitted: [`parse failed: ${error ?? "unknown error"}`],
+    citations_dropped: 0,
+    turns,
+    parse_failed: true,
+    raw_text: text,
+  };
+}
+
+export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise<number> {
+  const opts = parseArgs(argv);
+  const json = opts.json;
+  const query = opts.distillQuery;
+  if (opts.resumeFrom !== undefined) return emitScoutConfigError(json, "scout does not support --resume");
+  if (!query || !query.trim()) return emitScoutConfigError(json, "scout requires -q/--query");
+  if (opts.positionals.length > 0) return emitScoutConfigError(json, "scout does not accept positional input files; use --paths for hints");
+
+  const { config } = opts;
+  if (!opts.maxIterationsSet) config.maxIterations = Math.min(config.maxIterations, 20);
+  if (!opts.maxTimeSet) config.maxTimeMs = 900_000;
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const sessionId = opts.sessionId ?? newSessionId();
+  const started = deps.now?.() ?? Date.now();
+  const showProgress = json ? opts.verbose : !opts.quiet;
+  const progress = showProgress ? createRenderer(opts.verbose, process.stderr) : null;
+  let turns = 0;
+  let toolCalls = 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  const onEvent = (e: AgentEvent) => {
+    if (e.type === "turn_end") turns++;
+    else if (e.type === "tool_start") toolCalls++;
+    else if (e.type === "usage") {
+      promptTokens = e.promptTokens;
+      completionTokens += e.evalTokens;
+    }
+    progress?.(e);
+  };
+
+  const think = !opts.noThink;
+  const readFile = deps.readFile ?? ((file: string) => fs.readFileSync(file, "utf8"));
+  const denyPermission = async () => false;
+  const systemPrompt = buildScoutSystemPrompt(cwd, config, query, opts.scoutPaths);
+  const agent =
+    deps.createAgent?.(systemPrompt, onEvent, think, config) ??
+    new Agent(config, cwd, onEvent, denyPermission, systemPrompt, createScoutTools(config, {
+      cwd,
+      readFiles: new Map(),
+      todos: [],
+      signal: new AbortController().signal,
+    }), think);
+
+  const onSigint = () => {
+    agent.interrupt();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  if (deps.createAgent === undefined) process.on("SIGINT", onSigint);
+
+  let result = "";
+  let status: RunStatus = "error";
+  let error: string | undefined;
+  let errorKind: ErrorKind | undefined;
+  try {
+    let text = await agent.run(query);
+    status = agent.lastRunStatus;
+    let parsed = parseDigest(text);
+    if (!parsed.ok && status === "ok") {
+      text = await agent.run(
+        `The previous response did not match the required digest JSON schema: ${parsed.error}. ` +
+          "Return only valid JSON with answer, not_found, citations, omitted, and citations_dropped. No markdown.",
+      );
+      status = agent.lastRunStatus;
+      parsed = parseDigest(text);
+    }
+    const digest = parsed.ok && parsed.digest
+      ? evidenceCheckedScoutDigest(parsed.digest, cwd, readFile, turns)
+      : parseFailedScoutDigest(text, parsed.error, turns);
+    result = JSON.stringify(digest, null, 2);
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    errorKind = classifyError(error);
+    status = agent.lastRunStatus === "interrupted" ? "interrupted" : "error";
+  } finally {
+    if (deps.createAgent === undefined) process.off("SIGINT", onSigint);
+  }
+
+  const durationMs = (deps.now?.() ?? Date.now()) - started;
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date(started).toISOString(),
+    cwd,
+    model: config.model,
+    prompt: query,
+    kind: opts.kind ?? "scout",
+    status,
+    result,
+    error,
+    errorKind,
+    durationMs,
+    turns,
+    toolCalls,
+    tokens: { prompt: promptTokens, completion: completionTokens },
+    report: agent.getReport(),
+    messages: agent.getMessages(),
+  };
+  saveSession(record);
+
+  if (json) console.log(JSON.stringify(scoutForJson(record)));
+  else {
+    if (result) process.stdout.write(result + "\n");
+    if (error) process.stderr.write(c.red(`error: ${error}`) + "\n");
+    process.stderr.write(
+      c.dim(`session ${sessionId} (${status}, ${Math.round(durationMs / 1000)}s) — grade it: lh feedback ${sessionId} pass|fail`) + "\n",
+    );
+  }
+  return statusExitCode(status);
+}
+
 // ---------- async submit / wait / poll ----------
 
 export async function cmdSubmit(argv: string[]): Promise<number> {
   if (argv[0] === "batch") {
     console.error("error: submit does not support batch; run `lh batch` directly (it is synchronous — detached batch is not available in v1)");
+    return 1;
+  }
+  if (argv[0] === "distill") {
+    console.error("error: submit does not support distill; run `lh distill` directly (it is synchronous)");
+    return 1;
+  }
+  if (argv[0] === "scout") {
+    console.error("error: submit does not support scout; run `lh scout` directly (it is synchronous)");
     return 1;
   }
   const opts = parseArgs(argv);
@@ -1058,6 +1532,10 @@ async function main() {
       process.exit(cmdStats(argv.slice(1)));
     case "batch":
       process.exit(await cmdBatch(argv.slice(1)));
+    case "distill":
+      process.exit(await cmdDistill(argv.slice(1)));
+    case "scout":
+      process.exit(await cmdScout(argv.slice(1)));
   }
 
   const opts = parseArgs(argv);
