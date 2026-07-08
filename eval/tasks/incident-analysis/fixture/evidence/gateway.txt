@@ -1,0 +1,11 @@
+2026-06-18T09:12:00Z route=checkout requests=122 failed=0 p95_ms=184
+2026-06-18T09:13:00Z route=checkout requests=119 failed=0 p95_ms=201
+2026-06-18T09:14:00Z route=checkout requests=126 failed=3 p95_ms=1810
+2026-06-18T09:16:00Z route=checkout requests=131 failed=5 p95_ms=2440
+2026-06-18T09:18:00Z route=checkout requests=128 failed=7 p95_ms=3102
+2026-06-18T09:20:00Z route=checkout requests=137 failed=8 p95_ms=3451
+2026-06-18T09:22:00Z route=checkout requests=130 failed=6 p95_ms=2910
+2026-06-18T09:24:00Z route=checkout requests=124 failed=5 p95_ms=2330
+2026-06-18T09:26:00Z route=checkout requests=129 failed=3 p95_ms=1288
+2026-06-18T09:27:00Z route=checkout requests=121 failed=0 p95_ms=402
+2026-06-18T09:28:00Z route=checkout requests=125 failed=0 p95_ms=190

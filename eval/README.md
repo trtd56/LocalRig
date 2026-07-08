@@ -1,13 +1,13 @@
 # 評価スイート
 
 LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証条件で比較評価するためのスイート。
-全23タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。scout-locate / scout-honest は前処理 `lh scout` の評価用 fixture。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で対象を明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
+全29タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。scout-locate / scout-honest は前処理 `lh scout` の評価用 fixture。incident-analysis / data-analysis / requirements-synthesis / config-audit は、コード変更を伴わない調査・分析・判断文書の評価用 fixture。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で対象を明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
 
 ## 前提
 
 - **harness 側**: Ollama が起動しており `qwen36-27b-mtp:latest` が pull 済みであること
   (`curl -s http://localhost:11434/api/tags` で確認。`ollama show` は `:local` タグの解決に失敗するので `:latest` を使う)
-- **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり、全21タスクで $3 前後)
+- **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり。旧21タスク構成の実測で $3 前後)
 - `bun` (このリポジトリの標準ランタイム)。type-repair タスクの verify は `bunx tsc` を使う(初回のみネットワークからダウンロード)
 
 ## LLM不要の diff adapter 評価
@@ -27,6 +27,7 @@ bun run eval:diff-adapter
 bun run eval/run.ts --agent harness            # 全タスクをハーネスで
 bun run eval/run.ts --agent claude             # 全タスクを Claude Code (Sonnet) で
 bun run eval/run.ts --agent harness --task fix-bug,refactor   # タスク指定(カンマ区切り)
+bun run eval/run.ts --agent harness --task incident-analysis,data-analysis,requirements-synthesis,config-audit  # 非コーディング系のみ
 bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 ```
 
@@ -34,7 +35,7 @@ bun run eval/run.ts --agent harness --keep     # workdir を残して検分
 - `eval/results/` は gitignore 対象(実行結果はコミットしない)。スイート本体(tasks/・run.ts・REPORT.md)はコミットする
 - 判定 = 「verify コマンドが exit 0」かつ「テストファイル非改ざん」の両方
 - タスクごとの制限時間30分(ハーネスには `--max-time 1500` が渡り、SIGKILL 前に自力で切り上げる)。verify は120秒制限
-- 所要時間の目安: claude 全21タスクで約20分、harness で約110分(mass-migration 追加前の20タスク構成での実測値。21タスク一括だと mass-migration のローカル実行 ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない)
+- 所要時間の過去実績: 旧構成では claude 21タスクで約20分、harness 20タスクで約110分。現在の29タスク構成は未計測で、mass-migration のローカル実行だけでも ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない
 - summary の各エントリには `model` フィールドが記録される。harness アームは `LH_MODEL`(未設定なら `defaultConfig.model`)、claude 系アームはオーケストレータに渡している `--model` の値(現状 `sonnet` 固定)
 
 ## モデル更新時の回帰手順
@@ -154,8 +155,14 @@ bun run eval/analyze-preprocess.ts --baseline-agent claude --arm-agent claude-sc
 | perf-fix | 計算量改善(O(n²)→O(n)、経過時間アサーション) |
 | rename-sweep | 12ファイル23箇所の機械的リネーム |
 | mass-migration | 40ファイル46箇所の重量級API移行(委譲コスト計測用。source の正解値はパス導出不能でコメント内にのみ存在=単一sed耐性) |
+| batch-trio | docs・型修正・性能改善の独立3タスクをまとめたバッチ委譲 |
+| async-pair | 機械的移行と独立した設計メモを組み合わせた非同期委譲計測 |
 | scout-locate | 読み取り専用の所在調査(定義・登録・呼び出し元の分散探索) |
 | scout-honest | 存在しない機能に not_found と答える前処理版の迎合検査 |
+| incident-analysis | 複数ログ・デプロイ履歴・runbookを突き合わせる障害一次調査 |
+| data-analysis | 重複・除外規則・返金を含むCSVの集計とデータ品質説明 |
+| requirements-synthesis | 優先順位の異なる要求文書の競合解消と未決事項の保持 |
+| config-audit | 本番ポリシーに基づく設定監査・優先順位付け・是正提案 |
 
 ## 新タスク追加のプロトコル
 

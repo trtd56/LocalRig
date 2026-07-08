@@ -1,0 +1,12 @@
+{
+  "name": "data-analysis",
+  "prompt": "data/DEFINITIONS.md の集計規則に従い、data/orders.csv と data/refunds.csv を分析して ANALYSIS.md を作成してください。入力データは変更しないでください。先頭6行を厳密に `valid_orders: <整数>`、`excluded_rows: <整数>`、`gross_revenue: <小数2桁>`、`refund_total: <小数2桁>`、`net_revenue: <小数2桁>`、`top_region_by_net: <地域名>` の形式にしてください。続けて `## Product refund rates` を設け、各商品の返金率(金額ベース)を小数2桁の百分率で列挙し、最も高い商品に `highest` と明記してください。最後に `## Data quality` を設け、除外した各行と理由を列挙してください。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "applies completed/non-test/deduplication rules before aggregation",
+    "reports 10 valid orders, 3 excluded rows, gross 1380.00, refunds 250.00, net 1130.00",
+    "identifies east as the top region by net revenue",
+    "computes comet as the highest product refund rate at 30.36%",
+    "explains duplicate, test-account, and pending exclusions without modifying inputs"
+  ]
+}

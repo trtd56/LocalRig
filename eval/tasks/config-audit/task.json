@@ -1,0 +1,12 @@
+{
+  "name": "config-audit",
+  "prompt": "policy/PRODUCTION.md を基準に deploy/ 以下の本番設定を監査し、設定自体は変更せず AUDIT.md を作成してください。先頭行は厳密に `finding_count: <整数>` とし、その後に重大度の高い順で `F1: <critical|high|medium|low> | <相対パス> | <問題>` の形式で全違反を1行ずつ列挙してください。ポリシーが明示的に許可している項目は finding に含めないでください。続けて `## Recommendations` を設け、各findingに対応する具体的な是正策を書いてください。policy/ と deploy/ 以下は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "finds exactly four policy violations without flagging allowed version headers",
+    "prioritizes publicly exposed database port as critical",
+    "finds debug mode, disabled upstream TLS verification, and literal admin password as high",
+    "provides a recommendation for each finding",
+    "does not alter policy or deployment files"
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "incident-analysis",
+  "prompt": "あなたはインシデントの一次調査担当です。evidence/ 以下のデプロイ履歴、gateway/payments のログ、RUNBOOK.md を突き合わせ、コードや設定を変更せずに INCIDENT.md を作成してください。ノイズや既知の無害な警告を根本原因にしないでください。出力の先頭6行は次の形式を厳密に守ってください: `verdict: <confirmed|inconclusive>`、`service: <サービス名>`、`start: <ISO8601>`、`recovered: <ISO8601>`、`failed_requests: <整数>`、`root_cause: <1行の説明>`。7行目以降に `## Evidence` と `## Actions` を設け、Evidence には時刻付きの根拠を3点以上、Actions には恒久対策を2点以上箇条書きで記載してください。evidence/ 以下と RUNBOOK.md は変更禁止です。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "correlates deployment and service saturation across multiple evidence files",
+    "reports payments-api, 09:14 start, 09:28 recovery, and 37 failed requests",
+    "identifies the pool-size regression (40 to 8) rather than benign auth warnings",
+    "includes >=3 evidence bullets and >=2 action bullets",
+    "all supplied evidence remains unchanged"
+  ]
+}

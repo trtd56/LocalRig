@@ -1,0 +1,12 @@
+{
+  "name": "requirements-synthesis",
+  "prompt": "briefs/ 以下の4文書を読み、競合する要求を優先順位規則に従って統合し、実装は行わず DECISION.md を作成してください。先頭6行は `token_ttl_minutes: <整数>`、`single_use: <true|false>`、`invalidate_existing_sessions: <true|false>`、`unknown_email_response: <generic|explicit>`、`delivery_channel: <値>`、`open_question: <値>` の形式を厳密に守ってください。その後に `## Conflicts` を設け、各ステークホルダーの要求のうち採用しなかったものと、どの上位規則で退けたかを列挙してください。最後に `## Acceptance criteria` を設け、検証可能な基準を4項目以上書いてください。briefs/ 以下は変更禁止です。文書にない事項を勝手に決めず、未決事項は open question としてください。",
+  "verify": "bash test/verify.sh",
+  "checks": [
+    "resolves product/support conflicts using security and precedence rules",
+    "chooses 15-minute, single-use tokens and invalidates existing sessions",
+    "uses generic unknown-email responses and email delivery",
+    "keeps localization ownership as an explicit open question",
+    "documents rejected requests and >=4 testable acceptance criteria"
+  ]
+}

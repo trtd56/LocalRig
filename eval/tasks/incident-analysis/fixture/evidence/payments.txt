@@ -1,0 +1,8 @@
+2026-06-18T09:13:42Z level=warn msg="auth cache refresh delayed" authenticated=true
+2026-06-18T09:14:03Z level=warn db_pool_size=8 active=8 waiters=24 timeout_count=3
+2026-06-18T09:18:04Z level=error db_pool_size=8 active=8 waiters=51 timeout_count=15
+2026-06-18T09:22:01Z level=warn msg="auth cache refresh delayed" authenticated=true
+2026-06-18T09:24:04Z level=error db_pool_size=8 active=8 waiters=43 timeout_count=34
+2026-06-18T09:26:08Z level=info msg="rollback loaded" db_pool_size=40 active=11 waiters=9 timeout_count=37
+2026-06-18T09:27:05Z level=info db_pool_size=40 active=9 waiters=2 timeout_count=37
+2026-06-18T09:28:02Z level=info db_pool_size=40 active=7 waiters=0 timeout_count=37

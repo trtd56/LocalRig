@@ -1,0 +1,13 @@
+services:
+  api:
+    image: example/orders-api:3.4.0
+    env_file: app.env
+    read_only: true
+    networks: [private]
+  database:
+    image: postgres:17
+    ports:
+      - "0.0.0.0:5432:5432"
+    networks: [private]
+networks:
+  private: {}
