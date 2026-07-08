@@ -67,6 +67,9 @@ export interface DistillRequest {
   numCtx: number;
   budget: number;
   think?: boolean;
+  /** Optional adapter-specific safety instructions. The default is retained
+   * for existing file and diff callers. */
+  systemPrompt?: string;
 }
 
 export interface DistillResult {
@@ -443,9 +446,9 @@ export function mergeDigests(parts: Digest[]): Digest {
   };
 }
 
-function buildMapMessages(query: string, chunk: DistillChunk): ChatMessage[] {
+function buildMapMessages(query: string, chunk: DistillChunk, systemPrompt = SYSTEM_PROMPT): ChatMessage[] {
   return [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content:
@@ -456,9 +459,9 @@ function buildMapMessages(query: string, chunk: DistillChunk): ChatMessage[] {
   ];
 }
 
-function buildReduceMessages(query: string, digest: Digest): ChatMessage[] {
+function buildReduceMessages(query: string, digest: Digest, systemPrompt = SYSTEM_PROMPT): ChatMessage[] {
   return [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     {
       role: "user",
       content:
@@ -484,7 +487,7 @@ function fitsContext(
 }
 
 function fitReduceDigest(request: DistillRequest, digest: Digest, deps: DistillDeps): Digest {
-  if (fitsContext(buildReduceMessages(request.query, digest), request.numCtx, request.budget, deps.estimator)) {
+  if (fitsContext(buildReduceMessages(request.query, digest, request.systemPrompt), request.numCtx, request.budget, deps.estimator)) {
     return digest;
   }
 
@@ -494,7 +497,7 @@ function fitReduceDigest(request: DistillRequest, digest: Digest, deps: DistillD
     ? [...digest.omitted]
     : [...digest.omitted, truncationNote];
   const base = { ...digest, answer: "", omitted };
-  if (!fitsContext(buildReduceMessages(request.query, base), request.numCtx, request.budget, deps.estimator)) {
+  if (!fitsContext(buildReduceMessages(request.query, base, request.systemPrompt), request.numCtx, request.budget, deps.estimator)) {
     throw new DistillConfigError(
       "num_ctx is too small for reduce metadata and verified citations; increase num_ctx or lower --budget",
     );
@@ -505,7 +508,7 @@ function fitReduceDigest(request: DistillRequest, digest: Digest, deps: DistillD
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
     const candidate = { ...base, answer: digest.answer.slice(0, mid) };
-    if (fitsContext(buildReduceMessages(request.query, candidate), request.numCtx, request.budget, deps.estimator)) {
+    if (fitsContext(buildReduceMessages(request.query, candidate, request.systemPrompt), request.numCtx, request.budget, deps.estimator)) {
       low = mid;
     } else {
       high = mid - 1;
@@ -555,7 +558,7 @@ async function completeDigest(
 
 function contextChunkBudget(request: DistillRequest, deps: DistillDeps): number {
   const emptyChunk: DistillChunk = { index: 0, sources: [], text: "", estimatedTokens: 0, omitted: [] };
-  const fixedPrompt = estimatedPromptTokens(buildMapMessages(request.query, emptyChunk), deps.estimator);
+  const fixedPrompt = estimatedPromptTokens(buildMapMessages(request.query, emptyChunk, request.systemPrompt), deps.estimator);
   const available = request.numCtx - request.budget - fixedPrompt;
   if (available < 50) {
     throw new DistillConfigError(
@@ -597,7 +600,7 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
   let evalTokens = 0;
   const parts: Digest[] = [];
   for (const chunk of chunks) {
-    const mapMessages = buildMapMessages(request.query, chunk);
+    const mapMessages = buildMapMessages(request.query, chunk, request.systemPrompt);
     if (!fitsContext(mapMessages, request.numCtx, request.budget, deps.estimator)) {
       throw new DistillConfigError(
         `num_ctx cannot fit planned input chunk ${chunk.index + 1}; increase num_ctx or lower --budget`,
@@ -620,7 +623,7 @@ export async function distill(request: DistillRequest, deps: DistillDeps): Promi
   let merged = mergeDigests(parts);
   if (chunks.length > 1) {
     const reduceInput = fitReduceDigest(request, merged, deps);
-    const completed = await completeDigest(deps, buildReduceMessages(request.query, reduceInput), options);
+    const completed = await completeDigest(deps, buildReduceMessages(request.query, reduceInput, request.systemPrompt), options);
     promptTokens += completed.promptTokens;
     evalTokens += completed.evalTokens;
     const checked = deps.verifyCitations

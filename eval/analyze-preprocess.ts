@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 // Aggregates preprocessing eval runs (claude baseline vs claude-scout /
-// future claude-distill arms). Designed for P2 n=3 runs written with
+// claude-research / future claude-distill arms). Designed for P2 n=3 runs written with
 // eval/run.ts --run-id <id>.
 //
 //   bun run eval/analyze-preprocess.ts --baseline-agent claude --arm-agent claude-scout --task scout-locate
@@ -20,6 +20,10 @@ interface DelegationMetric {
   digestCitationCount?: number;
   digestParseFailed?: boolean;
   citationRecall?: number;
+  inputTokens?: number;
+  outputTokens?: number;
+  compressionRatio?: number;
+  fetchedPageCount?: number;
 }
 
 interface Entry {
@@ -104,7 +108,9 @@ function secs(n: number | undefined): string {
 }
 
 function preprocessRuns(runs: RunEntry[]): DelegationMetric[] {
-  return runs.flatMap((r) => r.delegations ?? []).filter((d) => d.kind === "scout" || d.kind === "distill");
+  return runs
+    .flatMap((r) => r.delegations ?? [])
+    .filter((d) => d.kind === "scout" || d.kind === "distill" || d.kind === "research");
 }
 
 function renderAgent(agent: string, runs: RunEntry[]): string[] {
@@ -120,10 +126,13 @@ function renderAgent(agent: string, runs: RunEntry[]): string[] {
   const delegated = runs.filter((r) => r.delegated).length;
   const pass = runs.filter((r) => r.passed).length;
   const qualityFail = runs.filter((r) => r.preprocessQualityFailed).length;
+  const compression = pp.map((d) => d.compressionRatio).filter((n): n is number => typeof n === "number");
+  const fetched = pp.map((d) => d.fetchedPageCount).filter((n): n is number => typeof n === "number");
 
   lines.push(
     `| ${agent} | ${runs.length} | ${pass}/${runs.length} | ${money(median(costs))} | ${secs(median(durations))} | ` +
-      `${delegated}/${runs.length} | ${pct(median(recall))} | ${drops} | ${qualityFail} |`,
+      `${delegated}/${runs.length} | ${pct(median(recall))} | ${drops} | ${median(compression)?.toFixed(3) ?? "—"} | ` +
+      `${median(fetched)?.toFixed(1) ?? "—"} | ${qualityFail} |`,
   );
   return lines;
 }
@@ -143,8 +152,8 @@ function main(): void {
   lines.push("");
   lines.push("## Rollup");
   lines.push("");
-  lines.push("| agent | runs | pass | median cost | median wall | preprocess used | median citation recall | citation drops | quality fails |");
-  lines.push("|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+  lines.push("| agent | runs | pass | median cost | median wall | preprocess used | median citation recall | citation drops | median compression | median pages | quality fails |");
+  lines.push("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
   lines.push(...renderAgent(baselineAgent, baseline));
   lines.push(...renderAgent(armAgent, arm));
   lines.push("");

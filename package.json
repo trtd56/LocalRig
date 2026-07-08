@@ -11,7 +11,8 @@
     "start": "bun run src/index.ts",
     "test": "bun test test/",
     "eval": "bun run eval/run.ts",
-    "eval:diff-adapter": "bun run eval/check-diff-adapter.ts"
+    "eval:diff-adapter": "bun run eval/check-diff-adapter.ts",
+    "eval:research-adapter": "bun run eval/check-research-adapter.ts"
   },
   "engines": {
     "bun": ">=1.2.0",

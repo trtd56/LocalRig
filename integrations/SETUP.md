@@ -38,6 +38,25 @@ localrig -h       # 動作確認
 
 > `which localrig` / `which lh` が失敗する場合は `~/.bun/bin` が PATH に入っているか確認。
 
+### 1-1. Web research provider（`lh research`を使う場合）
+
+検索を使う場合はBraveまたはSearXNGを設定する。direct URLを位置引数で渡すだけならprovider設定は不要。
+
+```sh
+# Brave Search
+export BRAVE_SEARCH_API_KEY="..."
+lh research -q "一次資料は?" --search-provider brave --max-results 8 --max-pages 5 --json
+
+# SearXNG（毎回 `--search-url` を渡してもよい）
+export LH_SEARXNG_URL="https://search.example.org"
+lh research -q "一次資料は?" --search-provider searxng --json
+
+# providerなし
+lh research -q "2資料の相違点は?" https://example.com/a https://example.com/b --json
+```
+
+取得本文と`manifest.json`は `$LH_HOME/research/<session_id>/`（既定 `~/.localrig/research/...`）にSHA-256付きsnapshotとして保存される。Web本文はuntrusted dataであり、出力digestだけを信用せず `sources[].snapshot_path` のquote/hash、鮮度、矛盾を確認してから `lh feedback <session_id> pass|fail` を記録する。標準fetcherはlocalhost/private/reserved宛て等を拒否するため、社内URLを直接取得する用途には使えない。
+
 ## 2. Claude Code のセットアップ
 
 ### 2-1. スキルのインストール

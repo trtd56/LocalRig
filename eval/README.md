@@ -21,6 +21,18 @@ bun run eval:diff-adapter
 
 これは added/deleted 両側の location 保持と捏造quote除外だけを測る。`lh diff` の発火閾値（READMEの暫定500行/32KB）はまだ実モデル比較で校正していない。確定には同一diffレビュー課題で baseline と前処理アームを複数回走らせ、最終成功率、上位モデル総コスト、citation recall、圧縮率、壁時計を比較する。
 
+## ライブWeb・実モデル不要の research adapter 評価
+
+```sh
+bun run eval:research-adapter
+```
+
+ephemeral loopback HTTP serverと注入fake search/fetch/completionだけを使う決定的ゲート。fixtureは3ページに分散した正解、tracking parameter付きcanonical重複、1500段落noise、答えなし、本文中prompt injection、2024年の古い矛盾資料と2026年の現行資料を含む。productionのSSRF防御を緩めず、公開用の架空URLを注入fetch内でloopbackへ写像する。
+
+2026-07-08の結果は citation precision=1、植込みcitation recall=1、fabricated citation drop=1、not_found/dedupe/injection拒否/古い矛盾の非採用が全てPASS、32,784 input tokens→375 output tokens（圧縮率0.0114）、取得7ページ。JSONにはwall timeとHTML正規化の相対scalingも出し、絶対速度を主ゲートにせず極端なO(n²)退行だけを検出する。
+
+この値は**ライブWebでも実モデルでもない**。adapterとsnapshot verifierの回帰試験であり、ローカルモデルの検索・選別品質、Web変動耐性、Claude/Codex側のコスト削減はまだ示していない。
+
 ## 実行
 
 ```sh
@@ -121,6 +133,12 @@ bun run eval/analyze-preprocess.ts --baseline-agent claude --arm-agent claude-sc
 ```
 
 `analyze-preprocess.ts` は `summary-<agent>.json` と `summary-<agent>.<run-id>.json` を集め、中央値 cost/壁時計、前処理遵守率、citation recall/drop、品質 FAIL 数を `eval/results/preprocess-comparison.md` に出す。
+
+## claude-research アーム（Web前処理の実測用足場）
+
+`eval/run.ts` は `claude-research` と `RESEARCH_NUDGE` を認識し、`LH_HOME` を `<task>-research/` に隔離する。summaryにはkind=research sessionの有無、citation count/drop、cited URL、input/output tokens、compression ratio、取得page数、parse失敗や未検証citation等のquality failureを保存し、`analyze-preprocess.ts --arm-agent claude-research` で他の前処理armと同じ経路に集計できる。
+
+ただしこれは**足場のみ**で、research用のClaude task fixtureとbaseline対照はまだ無い。既存runnerにはagent実行中だけephemeral Web fixtureを維持し、動的URLを同一task promptへ注入するhookがないため、現時点では上記deterministic smokeを必須ゲートとする。ライブWebの変動を混ぜずにfixture hookを追加した後、同日・同Claude CLI version・warm統制のbaseline/`claude-research`を各n=3で測る。したがって発火閾値もまだ暫定で、ページ数や総本文tokensの損益分岐は未確定。
 
 ## ランナーの仕組みと落とし穴
 

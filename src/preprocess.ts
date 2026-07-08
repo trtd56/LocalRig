@@ -1,5 +1,5 @@
 /** Shared, machine-readable contract for every preprocessing command. */
-export type PreprocessInputKind = "files" | "repository" | "diff";
+export type PreprocessInputKind = "files" | "repository" | "diff" | "web";
 
 export interface PreprocessCitation {
   file: string;

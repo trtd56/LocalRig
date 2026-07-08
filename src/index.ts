@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as readline from "node:readline";
 import * as path from "node:path";
@@ -32,6 +33,19 @@ import { preprocessDiff } from "./diff.ts";
 import { toPreprocessResult } from "./preprocess.ts";
 import { estimateTokens } from "./context/tokens.ts";
 import { OllamaClient } from "./provider/ollama.ts";
+import {
+  createBraveSearch,
+  createSearxngSearch,
+  fetchWebPage,
+  research,
+  ResearchConfigError,
+  ResearchFetchError,
+  ResearchModelError,
+  type FetchedWebPage,
+  type ResearchResult,
+  type SearchResult,
+  type WebSnapshot,
+} from "./research.ts";
 import { buildScoutSystemPrompt, buildSystemPrompt } from "./prompt/system.ts";
 import { createScoutTools } from "./tools/registry.ts";
 import { isBinary } from "./tools/read.ts";
@@ -42,6 +56,7 @@ import {
   type BatchStatus,
   type CheckRecord,
   computeStats,
+  dataDir,
   latestSessionId,
   listSessionIds,
   loadSession,
@@ -79,6 +94,9 @@ Usage:
   lh diff -q "question" [--staged] [--base REF] [--json]
                             summarize stdin or the cwd git diff with citations
                             verified against the immutable diff snapshot
+  lh research -q "question" [URL...] [--json]
+                            search and/or fetch direct HTTP(S) URLs, then return
+                            a citation-checked digest backed by saved snapshots
   lh wait <id> [--timeout 1200] [--json]
                             wait for a submitted session to finish
   lh poll <id> [--json]     inspect a submitted session without blocking
@@ -141,6 +159,15 @@ Diff flags:
   --base REF                compare REF to the working tree (safe argv, no shell)
   --budget TOKENS           target digest output budget (default: 2000)
   --think / --no-think      thinking is off by default; --think enables it
+Research flags:
+  -q, --query TEXT          required research question
+  --search-provider NAME    auto, brave, or searxng (default: auto)
+  --search-url URL          SearXNG base URL or search endpoint
+  --max-results N           search candidates to retrieve (default: 8)
+  --max-pages N             pages to fetch and inspect (default: 5)
+  --budget TOKENS           target digest output budget (default: 2000)
+  --think / --no-think      thinking is off by default; --think enables it
+  --resume                  not supported; research runs synchronously
   --resume ID               continue a saved session (one-shot only): restore
                             its transcript, append the prompt as a follow-up,
                             and resume the agent loop. Records resumed_from and
@@ -175,6 +202,10 @@ interface CliOptions {
   noThink: boolean;
   staged: boolean;
   base?: string;
+  searchProvider: string;
+  searchUrl?: string;
+  maxResults: number;
+  maxPages: number;
   positionals: string[];
 }
 
@@ -194,6 +225,9 @@ export function parseArgs(argv: string[]): CliOptions {
     scoutPaths: [],
     noThink: false,
     staged: false,
+    searchProvider: "auto",
+    maxResults: 8,
+    maxPages: 5,
     positionals: [],
   };
   // Fields already pinned by an env var baked into defaultConfig at load time.
@@ -282,6 +316,18 @@ export function parseArgs(argv: string[]): CliOptions {
       case "--base":
         if (argv[i + 1] === undefined || argv[i + 1]!.startsWith("-")) opts.base = "";
         else opts.base = argv[++i]!;
+        break;
+      case "--search-provider":
+        opts.searchProvider = argv[++i] ?? "";
+        break;
+      case "--search-url":
+        opts.searchUrl = argv[++i];
+        break;
+      case "--max-results":
+        opts.maxResults = Number(argv[++i]);
+        break;
+      case "--max-pages":
+        opts.maxPages = Number(argv[++i]);
         break;
       case "--paths":
         while (argv[i + 1] !== undefined && !argv[i + 1]!.startsWith("-")) {
@@ -1327,6 +1373,352 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
   return statusExitCode(status);
 }
 
+// ---------- web research preprocessing ----------
+
+export interface SavedResearchSnapshot {
+  id: string;
+  sha256: string;
+  url: string;
+  path: string;
+}
+
+export interface ResearchCliDeps {
+  search?: (query: string, maxResults: number) => Promise<SearchResult[]>;
+  fetchPage?: (url: string) => Promise<FetchedWebPage>;
+  complete?: (messages: ChatMessage[], options: ChatRequestOptions) => Promise<DistillCompleteResult>;
+  now?: () => number;
+  writeSnapshots?: (sessionId: string, snapshots: WebSnapshot[]) => SavedResearchSnapshot[] | Promise<SavedResearchSnapshot[]>;
+  env?: NodeJS.ProcessEnv;
+}
+
+interface ResearchSessionResult {
+  digest: ResearchResult["digest"];
+  sources: Array<Record<string, unknown>>;
+  manifest_path: string | undefined;
+}
+
+const RESEARCH_VALUE_FLAGS = new Set([
+  "-q",
+  "--query",
+  "--search-provider",
+  "--search-url",
+  "--max-results",
+  "--max-pages",
+  "--budget",
+  "--max-time",
+  "--model",
+  "--kind",
+  "--cwd",
+  "--session-id",
+  "--num-ctx",
+]);
+const RESEARCH_BOOLEAN_FLAGS = new Set(["--json", "--quiet", "-v", "--verbose", "--think", "--no-think"]);
+
+function validateResearchArgv(argv: string[]): string | undefined {
+  let think = false;
+  let noThink = false;
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]!;
+    if (RESEARCH_VALUE_FLAGS.has(arg)) {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("-")) return `${arg} requires a value`;
+      i++;
+      continue;
+    }
+    if (arg === "--think") think = true;
+    if (arg === "--no-think") noThink = true;
+    if (RESEARCH_BOOLEAN_FLAGS.has(arg) || !arg.startsWith("-")) continue;
+    if (arg === "--resume") return "research does not support --resume";
+    return `unknown research option: ${arg}`;
+  }
+  if (think && noThink) return "--think and --no-think cannot be used together";
+  return undefined;
+}
+
+function parseHttpUrl(value: string, flag: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new ResearchConfigError(`${flag} must be an absolute http:// or https:// URL: ${value}`);
+  }
+  if ((parsed.protocol !== "http:" && parsed.protocol !== "https:") || !parsed.hostname || parsed.username || parsed.password) {
+    throw new ResearchConfigError(`${flag} must be an absolute http:// or https:// URL without credentials: ${value}`);
+  }
+  return parsed.href;
+}
+
+function emitResearchConfigError(json: boolean, message: string): number {
+  if (json) console.log(JSON.stringify({ status: "error", error: message, error_kind: "config" satisfies ErrorKind }));
+  else process.stderr.write(c.red(`error: ${message}`) + "\n");
+  return 1;
+}
+
+function writeResearchSnapshots(sessionId: string, snapshots: WebSnapshot[]): SavedResearchSnapshot[] {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(sessionId) || sessionId.includes("..")) {
+    throw new ResearchConfigError("--session-id contains unsafe characters");
+  }
+  const root = path.join(dataDir(), "research", sessionId);
+  fs.mkdirSync(path.dirname(root), { recursive: true });
+  fs.mkdirSync(root);
+  const written = new Set<string>();
+  const saved = snapshots.map((snapshot) => {
+    const digest = createHash("sha256").update(snapshot.text).digest("hex");
+    if (snapshot.snapshot_sha256 !== digest) {
+      throw new Error(`snapshot digest mismatch for ${snapshot.url}`);
+    }
+    const file = path.join(root, `${digest}.txt`);
+    if (!written.has(digest)) {
+      fs.writeFileSync(file, snapshot.text, { encoding: "utf8", flag: "wx" });
+      written.add(digest);
+    }
+    return { id: digest, sha256: digest, url: snapshot.url, path: file };
+  });
+  const manifest = {
+    version: 1,
+    session_id: sessionId,
+    snapshots: snapshots.map((snapshot, index) => ({
+      id: saved[index]!.id,
+      sha256: saved[index]!.sha256,
+      url: snapshot.url,
+      normalized_url: snapshot.normalized_url,
+      title: snapshot.title,
+      fetched_at: snapshot.fetched_at,
+      path: path.basename(saved[index]!.path),
+      bytes: Buffer.byteLength(snapshot.text),
+    })),
+  };
+  fs.writeFileSync(path.join(root, "manifest.json"), JSON.stringify(manifest, null, 2), { encoding: "utf8", flag: "wx" });
+  return saved;
+}
+
+function sanitizedResearchSources(
+  sources: ResearchResult["sources"],
+  saved: SavedResearchSnapshot[],
+): Array<Record<string, unknown>> {
+  const bySha = new Map(saved.map((snapshot) => [snapshot.sha256, snapshot]));
+  return sources.map((source) => {
+    const snapshot = bySha.get(source.snapshot_sha256);
+    return {
+      url: source.url,
+      normalized_url: source.normalized_url,
+      title: source.title,
+      fetched_at: source.fetched_at,
+      snapshot_sha256: source.snapshot_sha256,
+      snapshot_id: snapshot?.id ?? source.snapshot_sha256,
+      snapshot_path: snapshot?.path,
+      input_tokens: source.input_tokens,
+    };
+  });
+}
+
+function researchForJson(record: SessionRecord) {
+  const payload = record.result ? JSON.parse(record.result) as ResearchSessionResult : undefined;
+  return {
+    session_id: record.id,
+    status: record.status,
+    digest: payload?.digest,
+    sources: payload?.sources,
+    manifest_path: payload?.manifest_path,
+    error: record.error,
+    error_kind: record.errorKind,
+    duration_ms: record.durationMs,
+    turns: record.turns,
+    tokens: record.tokens,
+    model: record.model,
+    cwd: record.cwd,
+    kind: record.kind,
+    feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<research useful? source snapshots and citations verified?>"`,
+  };
+}
+
+function chooseResearchSearch(
+  provider: string,
+  searchUrl: string | undefined,
+  directUrls: string[],
+  env: NodeJS.ProcessEnv,
+  injected: ResearchCliDeps["search"],
+): ResearchCliDeps["search"] {
+  if (provider === "brave") {
+    if (searchUrl) throw new ResearchConfigError("--search-url can only be used with the searxng provider");
+    if (!env.BRAVE_SEARCH_API_KEY) throw new ResearchConfigError("brave search requires BRAVE_SEARCH_API_KEY");
+    return injected ?? createBraveSearch({ apiKey: env.BRAVE_SEARCH_API_KEY });
+  }
+  if (provider === "searxng") {
+    const baseUrl = searchUrl ?? env.LH_SEARXNG_URL;
+    if (!baseUrl) throw new ResearchConfigError("searxng search requires --search-url or LH_SEARXNG_URL");
+    const parsed = parseHttpUrl(baseUrl, "--search-url");
+    return injected ?? createSearxngSearch({ baseUrl: parsed });
+  }
+  if (searchUrl) {
+    const parsed = parseHttpUrl(searchUrl, "--search-url");
+    return injected ?? createSearxngSearch({ baseUrl: parsed });
+  }
+  if (env.BRAVE_SEARCH_API_KEY) return injected ?? createBraveSearch({ apiKey: env.BRAVE_SEARCH_API_KEY });
+  if (env.LH_SEARXNG_URL) {
+    const parsed = parseHttpUrl(env.LH_SEARXNG_URL, "LH_SEARXNG_URL");
+    return injected ?? createSearxngSearch({ baseUrl: parsed });
+  }
+  if (directUrls.length > 0) return injected ?? (async () => []);
+  throw new ResearchConfigError("research needs a search provider: set BRAVE_SEARCH_API_KEY or LH_SEARXNG_URL, or pass direct URLs");
+}
+
+export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): Promise<number> {
+  const preliminaryJson = argv.includes("--json");
+  const argvError = validateResearchArgv(argv);
+  if (argvError) return emitResearchConfigError(preliminaryJson, argvError);
+  const opts = parseArgs(argv);
+  const json = opts.json;
+  const query = opts.distillQuery;
+  if (!query || !query.trim()) return emitResearchConfigError(json, "research requires -q/--query");
+  if (!new Set(["auto", "brave", "searxng"]).has(opts.searchProvider)) {
+    return emitResearchConfigError(json, "--search-provider must be one of: auto, brave, searxng");
+  }
+  const positiveInteger = (value: number) => Number.isInteger(value) && value >= 1;
+  if (!positiveInteger(opts.maxResults)) return emitResearchConfigError(json, "--max-results must be an integer >= 1");
+  if (!positiveInteger(opts.maxPages)) return emitResearchConfigError(json, "--max-pages must be an integer >= 1");
+  if (!positiveInteger(opts.distillBudget)) return emitResearchConfigError(json, "--budget must be an integer >= 1");
+  if (!positiveInteger(opts.config.numCtx)) return emitResearchConfigError(json, "--num-ctx must be an integer >= 1");
+  if (!opts.config.model.trim()) return emitResearchConfigError(json, "--model must not be empty");
+  if (opts.maxTimeSet && (!Number.isFinite(opts.config.maxTimeMs) || opts.config.maxTimeMs < 0)) {
+    return emitResearchConfigError(json, "--max-time must be a finite number >= 0");
+  }
+  if (opts.sessionId !== undefined && (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(opts.sessionId) || opts.sessionId.includes(".."))) {
+    return emitResearchConfigError(json, "--session-id contains unsafe characters");
+  }
+
+  let directUrls: string[];
+  let search: NonNullable<ResearchCliDeps["search"]>;
+  try {
+    directUrls = opts.positionals.map((url) => parseHttpUrl(url, "direct URL"));
+    search = chooseResearchSearch(opts.searchProvider, opts.searchUrl, directUrls, deps.env ?? process.env, deps.search)!;
+  } catch (err) {
+    return emitResearchConfigError(json, err instanceof Error ? err.message : String(err));
+  }
+
+  const { config } = opts;
+  const cwd = path.resolve(opts.cwd ?? process.cwd());
+  const sessionId = opts.sessionId ?? newSessionId();
+  const now = deps.now ?? Date.now;
+  const started = now();
+  const abort = new AbortController();
+  let timedOut = false;
+  let interrupted = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  if (config.maxTimeMs > 0) {
+    timer = setTimeout(() => {
+      timedOut = true;
+      abort.abort();
+    }, config.maxTimeMs);
+  }
+  const onSigint = () => {
+    interrupted = true;
+    abort.abort();
+    process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
+  };
+  const fullyInjected = deps.search !== undefined && deps.fetchPage !== undefined && deps.complete !== undefined;
+  if (!fullyInjected) process.on("SIGINT", onSigint);
+
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  let turns = 0;
+  const complete = async (messages: ChatMessage[], options: ChatRequestOptions): Promise<DistillCompleteResult> => {
+    turns++;
+    if (deps.complete) return abortable(deps.complete(messages, options), abort.signal);
+    let usage = { promptTokens: 0, evalTokens: 0 };
+    const text = await client!.complete(messages, {
+      ...options,
+      onUsage: (value) => {
+        usage = value;
+        options.onUsage?.(value);
+      },
+    }, abort.signal);
+    return { text, promptTokens: usage.promptTokens, evalTokens: usage.evalTokens };
+  };
+  const fetchPage = deps.fetchPage ?? ((url: string) => fetchWebPage(url, {
+    fetch: (input, init) => globalThis.fetch(input, { ...init, signal: abort.signal }),
+  }));
+  const writer = deps.writeSnapshots ?? writeResearchSnapshots;
+
+  let result = "";
+  let status: RunStatus = "error";
+  let error: string | undefined;
+  let errorKind: ErrorKind | undefined;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  try {
+    const out = await research({
+      query,
+      directUrls,
+      maxResults: opts.maxResults,
+      maxPages: opts.maxPages,
+      numCtx: config.numCtx,
+      budget: opts.distillBudget,
+      think: opts.noThink ? false : opts.distillThink,
+    }, {
+      search: (value, limit) => abortable(search(value, limit), abort.signal),
+      fetchPage: (url) => abortable(fetchPage(url), abort.signal),
+      complete,
+      estimator: estimateTokens,
+      now: () => new Date(now()),
+    });
+    if (abort.signal.aborted) throw new Error("operation aborted");
+    promptTokens = out.promptTokens;
+    completionTokens = out.evalTokens;
+    const saved = await writer(sessionId, out.snapshots);
+    const sources = sanitizedResearchSources(out.sources, saved);
+    const manifestPath = deps.writeSnapshots === undefined && saved.length > 0
+      ? path.join(dataDir(), "research", sessionId, "manifest.json")
+      : undefined;
+    result = JSON.stringify({ digest: out.digest, sources, manifest_path: manifestPath } satisfies ResearchSessionResult);
+    status = "ok";
+  } catch (err) {
+    error = err instanceof Error ? err.message : String(err);
+    status = interrupted ? "interrupted" : timedOut ? "timeout" : "error";
+    errorKind = interrupted || timedOut
+      ? undefined
+      : err instanceof ResearchConfigError
+        ? "config"
+        : err instanceof ResearchModelError
+          ? "ollama_error"
+          : err instanceof ResearchFetchError
+            ? "connection"
+            : classifyError(error);
+  } finally {
+    if (timer) clearTimeout(timer);
+    if (!fullyInjected) process.off("SIGINT", onSigint);
+  }
+
+  const durationMs = now() - started;
+  const record: SessionRecord = {
+    id: sessionId,
+    createdAt: new Date(started).toISOString(),
+    cwd,
+    model: config.model,
+    prompt: query,
+    kind: opts.kind ?? "research",
+    status,
+    result,
+    error,
+    errorKind,
+    durationMs,
+    turns,
+    toolCalls: 0,
+    tokens: { prompt: promptTokens, completion: completionTokens },
+    report: { changedFiles: [], commandsRun: [] },
+  };
+  saveSession(record);
+
+  if (json) console.log(JSON.stringify(researchForJson(record)));
+  else {
+    if (result) process.stdout.write(JSON.stringify((JSON.parse(result) as ResearchSessionResult).digest, null, 2) + "\n");
+    if (error) process.stderr.write(c.red(`error: ${error}`) + "\n");
+    process.stderr.write(
+      c.dim(`session ${sessionId} (${status}, ${Math.round(durationMs / 1000)}s) — grade it: lh feedback ${sessionId} pass|fail`) + "\n",
+    );
+  }
+  return statusExitCode(status);
+}
+
 // ---------- scout ----------
 
 export interface ScoutAgent {
@@ -1571,6 +1963,10 @@ export async function cmdSubmit(argv: string[]): Promise<number> {
     console.error("error: submit does not support diff; run `lh diff` directly (it is synchronous)");
     return 1;
   }
+  if (argv[0] === "research") {
+    console.error("error: submit does not support research; run `lh research` directly (it is synchronous)");
+    return 1;
+  }
   const opts = parseArgs(argv);
   if (opts.prompt === "-") opts.prompt = await readStdin();
   if (opts.prompt === undefined || !opts.prompt.trim()) {
@@ -1808,6 +2204,8 @@ async function main() {
       process.exit(await cmdScout(argv.slice(1)));
     case "diff":
       process.exit(await cmdDiff(argv.slice(1)));
+    case "research":
+      process.exit(await cmdResearch(argv.slice(1)));
   }
 
   const opts = parseArgs(argv);
