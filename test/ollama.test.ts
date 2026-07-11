@@ -29,7 +29,7 @@ describe("OllamaClient metrics", () => {
     expect(response.timings).toBeUndefined();
   });
 
-  test("complete reports timings", async () => {
+  test("complete reports timings and sends keep_alive at top level", async () => {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (_input, init) => {
       body = JSON.parse(String(init?.body));
@@ -40,11 +40,13 @@ describe("OllamaClient metrics", () => {
       }));
     }) as typeof fetch;
     let usage: unknown;
-    await new OllamaClient("http://test", "model").complete(
+    await new OllamaClient("http://test", "model", "30m").complete(
       [{ role: "user", content: "hi" }],
       { num_ctx: 100, onUsage: (value) => { usage = value; } },
       new AbortController().signal,
     );
+    expect(body.keep_alive).toBe("30m");
+    expect((body.options as Record<string, unknown>).keep_alive).toBeUndefined();
     expect(usage).toEqual({
       promptTokens: 8, evalTokens: 2,
       timings: { totalMs: 9, loadMs: 1, promptEvalMs: 3, evalMs: 4 },

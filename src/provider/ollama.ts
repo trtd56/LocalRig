@@ -39,6 +39,7 @@ export class OllamaClient {
   constructor(
     private baseUrl: string,
     private model: string,
+    private keepAlive?: string | number,
   ) {}
 
   /**
@@ -72,6 +73,8 @@ export class OllamaClient {
     // Only send `think` when the caller set it explicitly — omitting it lets
     // the model use its default (thinking on for this Qwen build).
     if (options.think !== undefined) body.think = options.think;
+    const keepAlive = options.keep_alive ?? this.keepAlive;
+    if (keepAlive !== undefined) body.keep_alive = keepAlive;
 
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",
@@ -168,6 +171,8 @@ export class OllamaClient {
       messages: messages.map(wireMessage),
     };
     if (options.format !== undefined) body.format = options.format;
+    const keepAlive = options.keep_alive ?? this.keepAlive;
+    if (keepAlive !== undefined) body.keep_alive = keepAlive;
 
     const res = await fetch(`${this.baseUrl}/api/chat`, {
       method: "POST",

@@ -6,6 +6,8 @@ export type PermissionMode = "default" | "auto" | "yolo";
 export interface Config {
   ollamaUrl: string;
   model: string;
+  /** How long Ollama keeps the model runner resident; "0" unloads it. */
+  keepAlive: string;
   numCtx: number;
   numPredict: number;
   temperature: number;
@@ -116,6 +118,7 @@ const profile = resolveProfile(resolvedModel);
 export const defaultConfig: Config = {
   ollamaUrl: process.env.OLLAMA_HOST ?? "http://localhost:11434",
   model: resolvedModel,
+  keepAlive: process.env.LH_KEEP_ALIVE ?? "30m",
   numCtx: Number(process.env.LH_NUM_CTX ?? 32768),
   numPredict: 16384,
   temperature: Number(process.env.LH_TEMPERATURE ?? profile.temperature),

@@ -447,12 +447,12 @@ describe("manage: safety valve", () => {
   });
 });
 
-// ---------------------------------------------------------- stubOlderFileReads
+// ---------------------------------------------------- markSupersededFileReads
 
-describe("stubOlderFileReads", () => {
-  test("stubs only ≥1000-char, un-pruned, same-path tool reads", () => {
+describe("markSupersededFileReads", () => {
+  test("marks without mutation, then stubs at the next prune gate", async () => {
     const { client } = fakeClient(async () => GOOD_SUMMARY);
-    const cm = new ContextManager(cfg(), client);
+    const cm = new ContextManager(cfg({ pruneAt: 0.1, compactAt: 2, keepRecentMessages: 10 }), client);
 
     const messages = [
       msg("system", "sys"),
@@ -463,12 +463,18 @@ describe("stubOlderFileReads", () => {
       msg("user", "read it again"),
     ];
 
-    cm.stubOlderFileReads(messages, "/a/b.ts");
+    cm.markSupersededFileReads(messages, "/a/b.ts");
 
-    // Big older read of the same path: stubbed, _tokens cleared.
+    expect(messages[1]!.content).toBe("r".repeat(1500));
+    expect(messages[1]!._tokens).toBe(999);
+    expect(messages[1]!._superseded).toBe(true);
+
+    await cm.manage(messages, () => {}, new AbortController().signal);
+
     expect(messages[1]!.content).toBe("[superseded: newer read of /a/b.ts below]");
     expect(messages[1]!._pruned).toBe(true);
     expect(messages[1]!._tokens).toBeUndefined();
+    expect(messages[1]!._superseded).toBe(false);
 
     // Small read of the same path: left alone (prefix-cache preservation).
     expect(messages[2]!.content).toBe("s".repeat(200));

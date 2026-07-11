@@ -27,6 +27,8 @@ export interface ChatMessage {
   _tokens?: number;
   /** Marks a tool result that has been pruned down to a stub. */
   _pruned?: boolean;
+  /** A newer read exists; converted to a stub only when pruning begins. */
+  _superseded?: boolean;
   /** Absolute file path if this tool result came from reading a file (dedup). */
   _filePath?: string;
   /** Monotonic sequence number for ordering/pruning decisions. */

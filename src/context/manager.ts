@@ -73,13 +73,11 @@ export class ContextManager {
    * Called BEFORE the new read result is pushed. Stubbing breaks the prefix
    * cache, so only large superseded reads (≥ 1000 chars) are stubbed.
    */
-  stubOlderFileReads(messages: ChatMessage[], filePath: string): void {
+  markSupersededFileReads(messages: ChatMessage[], filePath: string): void {
     for (const m of messages) {
       if (m.role !== "tool" || m._pruned || m._filePath !== filePath) continue;
       if (m.content.length < STUB_MIN_CHARS) continue;
-      m.content = `[superseded: newer read of ${displayPath(filePath)} below]`;
-      m._pruned = true;
-      m._tokens = undefined;
+      m._superseded = true;
     }
   }
 
@@ -97,6 +95,14 @@ export class ContextManager {
     const beforePrune = this.ledger.estimateTotal(messages);
     const protectedFrom = Math.max(0, messages.length - keepRecentMessages);
     let prunedAny = false;
+    for (const m of messages) {
+      if (m.role !== "tool" || m._pruned || !m._superseded) continue;
+      m.content = `[superseded: newer read of ${displayPath(m._filePath ?? "file")} below]`;
+      m._pruned = true;
+      m._superseded = false;
+      m._tokens = undefined;
+      prunedAny = true;
+    }
     for (let i = 0; i < protectedFrom; i++) {
       const m = messages[i]!;
       if (m.role === "tool" && !m._pruned && m.content.length > PRUNE_MIN_CHARS) {

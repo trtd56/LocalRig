@@ -13,6 +13,7 @@ describe("defaultConfig", () => {
     expect(defaultConfig.headroomTokens).toBe(4096);
     expect(defaultConfig.numPredict).toBe(16384);
     expect(defaultConfig.numCtx).toBe(32768);
+    expect(defaultConfig.keepAlive).toBe("30m");
   });
 
   test("dead maxRepairAttempts knob is gone", () => {

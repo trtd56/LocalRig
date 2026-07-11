@@ -2094,7 +2094,7 @@ export async function cmdDistill(argv: string[], deps: DistillCliDeps = {}): Pro
     return emitDistillConfigError(json, "distill found no readable input", warnings);
   }
 
-  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model, config.keepAlive) : undefined;
   let turns = 0;
   let promptLastTokens = 0;
   let promptTotalTokens = 0;
@@ -2304,7 +2304,7 @@ export async function cmdDiff(argv: string[], deps: DiffCliDeps = {}): Promise<n
     process.stderr.write("\n" + c.yellow("[interrupted]") + "\n");
   };
   if (deps.complete === undefined) process.on("SIGINT", onSigint);
-  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model, config.keepAlive) : undefined;
   let turns = 0;
   let promptLastTokens = 0;
   let promptTotalTokens = 0;
@@ -2656,7 +2656,7 @@ export async function cmdResearch(argv: string[], deps: ResearchCliDeps = {}): P
   const fullyInjected = deps.search !== undefined && deps.fetchPage !== undefined && deps.complete !== undefined;
   if (!fullyInjected) process.on("SIGINT", onSigint);
 
-  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model) : undefined;
+  const client = deps.complete === undefined ? new OllamaClient(config.ollamaUrl, config.model, config.keepAlive) : undefined;
   let turns = 0;
   let promptLastTokens = 0;
   let promptTotalTokens = 0;

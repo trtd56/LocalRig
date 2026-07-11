@@ -79,7 +79,7 @@ export class Agent {
     /** Command-scoped deadline shared with checks/batch orchestration. */
     private commandDeadline?: RunDeadline,
   ) {
-    this.client = new OllamaClient(config.ollamaUrl, config.model);
+    this.client = new OllamaClient(config.ollamaUrl, config.model, config.keepAlive);
     this.toolCtx = {
       cwd,
       readFiles: new Map(),
@@ -462,7 +462,7 @@ export class Agent {
 
     // Dedup: a fresh read of the same file supersedes older copies in history.
     if (result.filePath) {
-      this.contextManager.stubOlderFileReads(this.messages, result.filePath);
+      this.contextManager.markSupersededFileReads(this.messages, result.filePath);
     }
     return result;
   }

@@ -116,6 +116,7 @@ describe("Agent.runTextOnly", () => {
       const agent = new Agent({ ...defaultConfig }, os.tmpdir(), (event) => events.push(event), async () => false, "SYS", [tool], true);
       expect(await agent.runTextOnly("repair as JSON")).toBe('{"answer":"fixed"}');
       expect(requestBody?.tools).toEqual([]);
+      expect(requestBody?.keep_alive).toBe("30m");
       const messages = requestBody?.messages as Array<{ content: string }>;
       expect(messages.at(-1)?.content).toBe("repair as JSON");
       expect(messages.some((m) => m.content.includes("CRITICAL - stopping now"))).toBe(false);

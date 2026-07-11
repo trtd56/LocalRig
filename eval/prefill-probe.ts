@@ -69,7 +69,7 @@ async function sample(
 
 async function main() {
   const options = args();
-  const client = new OllamaClient(options.url, options.model);
+  const client = new OllamaClient(options.url, options.model, defaultConfig.keepAlive);
   const samples: ProbeSample[] = [];
   for (const numCtx of options.contexts) {
     for (const size of options.sizes) {
