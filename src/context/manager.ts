@@ -70,8 +70,8 @@ export class ContextManager {
 
   /**
    * Dedup: a fresh read of the same file supersedes older copies in history.
-   * Called BEFORE the new read result is pushed. Stubbing breaks the prefix
-   * cache, so only large superseded reads (≥ 1000 chars) are stubbed.
+   * Called BEFORE the new read result is pushed. Only metadata changes here;
+   * the content and token count remain byte-stable until the prune gate.
    */
   markSupersededFileReads(messages: ChatMessage[], filePath: string): void {
     for (const m of messages) {
@@ -95,6 +95,8 @@ export class ContextManager {
     const beforePrune = this.ledger.estimateTotal(messages);
     const protectedFrom = Math.max(0, messages.length - keepRecentMessages);
     let prunedAny = false;
+    // The prune gate has already decided to break the prefix, so fold every
+    // redundant marked read into this one mutation batch, even in the tail.
     for (const m of messages) {
       if (m.role !== "tool" || m._pruned || !m._superseded) continue;
       m.content = `[superseded: newer read of ${displayPath(m._filePath ?? "file")} below]`;

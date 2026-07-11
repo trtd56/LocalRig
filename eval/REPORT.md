@@ -513,3 +513,39 @@ warm 換算は実測に基づく厳密計算(attempt 6 のターン1書き込み
 #### 総括(第6ラウンド)
 
 `lh batch` 一級化は**機能面で完全合格**(2 run 連続でローカル 3/3・check 全て初回通過・修復ループ発火ゼロ・再検証スイープ退行ゼロ)。経済面では、CLI 2.1.202 の会計変更という向かい風の下で**唯一黒字を維持した委譲形態**となり、手組み逐次委譲(旧推奨)は赤字化したため運用推奨を `lh batch` に一本化する。全セル n=1、ローカル壁時計の分散が大きい(±2倍)点は従来以上に留意。測定プロトコル(同日・同バージョン・warm・アーカイブ&リトライ)と間欠 ConnectionRefused の回避運用は上記の通り文書化した。
+
+### 高速化ラウンド: provider内訳・KV cache・MTP/C micro-bench (2026-07-11)
+
+計測基盤を追加し、各model turnへ`load_ms` / `prompt_eval_ms` / `eval_ms` / token数 / thinking文字数 / interrupted / prefill・decode tok/sを保存した。旧セッションはadditive migrationで読め、`eval/prefill-probe.ts`と`eval/analyze-perf.ts`でcold/warm/suffix/decodeおよびsession横断分類を再現できる。全512 unit testsと17 eval testsが通過した。
+
+#### 基準probe（旧ローカル`qwen36-27b-mtp:latest`、ctx32）
+
+| sample | prompt/load | 結果 |
+|---|---:|---:|
+| cold 10k | load 22.40s | prefill 160.56 tok/s |
+| warm確立1回目 | load 0.18s | prefill 116.18 tok/s (MISS) |
+| 同一prompt再送 | load 0.24s | prefill 46,842 tok/s (HIT床) |
+| suffix追記 | load 0.24s | prefill 959.56 tok/s |
+| 固定decode | 512 tokens | 9.89 tok/s |
+
+実ワンショットは19.38sで、2251 prompt tokensのprefill 16.74s（134.49 tok/s）、decode 2.11s（12.83 tok/s）、load 0.17s。待ち時間の主成分がloadではなくMISS時prefillであることを初めて直接確認した。一方、初回/設定切替時は3.2〜22.4sのRELOADも観測した。
+
+#### C0 / micro-bench
+
+手元の旧モデルは16GBの独自blobでModelfileにMTP情報がなく、公式`qwen3.6:27b-mtp-q4_K_M`（digest `21c6dd8f67de`）を別アームとして取得した。旧runnerを停止した後の公式MTP fixed decode n=3は12.61 / 13.25 / 13.72 tok/s（中央値13.25、旧9.89比+33.9%）で、10%足切りを通過した。
+
+2k cold-prefill n=3中央値（公式MTP）:
+
+| arm | prefill tok/s | ctx32比 | 判定 |
+|---|---:|---:|---|
+| ctx16 | 154.20 | +0.4% | 改善<10%、脱落 |
+| ctx32 | 153.54 | baseline | 維持 |
+| ctx64 | 143.99 | −6.2% | 脱落 |
+| num_batch=1024 | 135.77 | −11.6% | 脱落 |
+| num_batch=2048 | 131.45 | −14.4% | 脱落 |
+
+Bの代表6タスク×n=3ペアゲートは、最初のsample中に別プロセスが同じdaemonへ`gemma4:e2b`をロードしたため中止した。`ollama ps`でQwenとGemmaの同時100% GPU常駐を確認しており、同一daemonの別ワークロードがrunner/KV/メモリ条件を変えることが、従来333〜1688s分散の具体的な外生要因として判明した。評価専用daemonを確保するまで、このsampleを品質/速度証拠へ採用しない。
+
+#### D準備
+
+fake infinite-thinking streamで「予算超過abort→nudge→再abort→`think:false`」を実効確認した。`think-runaway` fixtureはpristine 2 FAIL、参照修正2 PASS。batch manifestへtask別`think`を追加したが、kind別既定はn=3品質ゲート未完のためまだ変更していない。
