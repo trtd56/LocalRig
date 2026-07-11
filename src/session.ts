@@ -14,6 +14,7 @@ import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
 import type { IsolationSessionMetadata } from "./isolation/types.ts";
+import type { ModelTurnMetric } from "./metrics.ts";
 
 export const SESSION_SCHEMA_VERSION = 2;
 export const FEEDBACK_SCHEMA_VERSION = 2;
@@ -72,6 +73,7 @@ export interface TaskRecord {
   turns: number;
   check?: CheckRecord;
   report?: RunReport;
+  durations?: SessionDurations;
 }
 
 /**
@@ -110,6 +112,9 @@ export interface SessionDurations {
   tool_ms?: number;
   check_ms?: number;
   ttft_ms?: number;
+  model_prompt_eval_ms?: number;
+  model_eval_ms?: number;
+  load_ms?: number;
 }
 
 export interface MetricDimensions {
@@ -240,6 +245,7 @@ export interface SessionRecord {
   dimensions?: MetricDimensions;
   /** Private-worktree execution and retained patch/apply state. */
   isolation?: IsolationSessionMetadata;
+  modelTurns?: ModelTurnMetric[];
 }
 
 export type FeedbackOutcome = "accepted_as_is" | "accepted_after_resume" | "rejected";
@@ -313,7 +319,42 @@ function normalizeDurations(value: unknown, durationMs: number): SessionDuration
     tool_ms: optional("tool_ms"),
     check_ms: optional("check_ms"),
     ttft_ms: optional("ttft_ms"),
+    model_prompt_eval_ms: optional("model_prompt_eval_ms"),
+    model_eval_ms: optional("model_eval_ms"),
+    load_ms: optional("load_ms"),
   };
+}
+
+function normalizeModelTurns(value: unknown): ModelTurnMetric[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const optional = (row: Record<string, unknown>, key: string): number | undefined =>
+    typeof row[key] === "number" && Number.isFinite(row[key]) && (row[key] as number) >= 0
+      ? row[key] as number
+      : undefined;
+  const normalized: ModelTurnMetric[] = [];
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    const turn = optional(item, "turn");
+    const duration = optional(item, "duration_ms");
+    if (turn === undefined || !Number.isInteger(turn) || turn < 1 || duration === undefined) continue;
+    normalized.push({
+      turn,
+      task_id: typeof item.task_id === "string" && item.task_id ? item.task_id : undefined,
+      duration_ms: duration,
+      ttft_ms: optional(item, "ttft_ms"),
+      load_ms: optional(item, "load_ms"),
+      prompt_eval_ms: optional(item, "prompt_eval_ms"),
+      eval_ms: optional(item, "eval_ms"),
+      prompt_tokens: optional(item, "prompt_tokens"),
+      eval_tokens: optional(item, "eval_tokens"),
+      thinking_chars: optional(item, "thinking_chars"),
+      interrupted: typeof item.interrupted === "boolean" ? item.interrupted : undefined,
+      prefill_tps: optional(item, "prefill_tps"),
+      decode_tps: optional(item, "decode_tps"),
+      context_event: item.context_event === "prune" || item.context_event === "compact" ? item.context_event : undefined,
+    });
+  }
+  return normalized;
 }
 
 const ISOLATION_APPLY_STATUSES = new Set(["pending", "not_needed", "applied", "retained", "conflict", "failed"]);
@@ -448,6 +489,7 @@ function normalizeSession(rawValue: unknown, expectedId?: string): SessionRecord
     durationMs,
     durations: normalizeDurations(rawValue.durations, durationMs),
     tokens: normalizeTokens(rawValue.tokens),
+    modelTurns: normalizeModelTurns(rawValue.modelTurns),
     dimensions: {
       ...(isRecord(rawValue.dimensions) ? rawValue.dimensions : {}),
       model: typeof rawValue.model === "string" ? rawValue.model : undefined,

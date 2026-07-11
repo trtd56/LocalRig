@@ -362,8 +362,9 @@ export class Agent {
     let interrupted = false;
     const started = Date.now();
     let firstTokenAt: number | undefined;
+    let response: ChatResponse | undefined;
     try {
-      const response = await this.client.chat(
+      response = await this.client.chat(
         this.messages,
         tools,
         {
@@ -416,6 +417,13 @@ export class Agent {
         phase: "model",
         durationMs: Date.now() - started,
         ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - started,
+        loadMs: response?.timings?.loadMs,
+        promptEvalMs: response?.timings?.promptEvalMs,
+        evalMs: response?.timings?.evalMs,
+        promptTokens: response?.promptTokens,
+        evalTokens: response?.evalTokens,
+        thinkingChars,
+        interrupted,
       });
     }
   }

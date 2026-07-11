@@ -6,7 +6,7 @@ import * as os from "node:os";
 import { Agent, shouldInterruptThinking } from "../src/agent.ts";
 import { defaultConfig } from "../src/config.ts";
 import { buildScoutSystemPrompt } from "../src/prompt/system.ts";
-import type { ChatMessage, ToolDef } from "../src/types.ts";
+import type { AgentEvent, ChatMessage, ToolDef } from "../src/types.ts";
 
 describe("shouldInterruptThinking", () => {
   const base = { thinkingChars: 10_000, budgetChars: 6000, sawOutput: false, interruptionsSoFar: 0 };
@@ -97,6 +97,10 @@ describe("Agent.runTextOnly", () => {
         done: true,
         prompt_eval_count: 10,
         eval_count: 3,
+        total_duration: 20_000_000,
+        load_duration: 1_000_000,
+        prompt_eval_duration: 5_000_000,
+        eval_duration: 12_000_000,
       });
       return new Response(line + "\n", { status: 200 });
     }) as typeof fetch;
@@ -108,13 +112,25 @@ describe("Agent.runTextOnly", () => {
         mutating: false,
         execute: async () => ({ ok: true, output: "unused" }),
       };
-      const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SYS", [tool], true);
+      const events: AgentEvent[] = [];
+      const agent = new Agent({ ...defaultConfig }, os.tmpdir(), (event) => events.push(event), async () => false, "SYS", [tool], true);
       expect(await agent.runTextOnly("repair as JSON")).toBe('{"answer":"fixed"}');
       expect(requestBody?.tools).toEqual([]);
       const messages = requestBody?.messages as Array<{ content: string }>;
       expect(messages.at(-1)?.content).toBe("repair as JSON");
       expect(messages.some((m) => m.content.includes("CRITICAL - stopping now"))).toBe(false);
       expect(agent.lastRunStatus).toBe("ok");
+      expect(events.find((event) => event.type === "timing")).toMatchObject({
+        type: "timing",
+        phase: "model",
+        loadMs: 1,
+        promptEvalMs: 5,
+        evalMs: 12,
+        promptTokens: 10,
+        evalTokens: 3,
+        thinkingChars: 0,
+        interrupted: false,
+      });
     } finally {
       globalThis.fetch = originalFetch;
     }

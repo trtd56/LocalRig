@@ -62,6 +62,7 @@ import { isBinary } from "./tools/read.ts";
 import { createRenderer, c } from "./ui/render.ts";
 import type { AgentEvent, ChatMessage, ChatRequestOptions, ErrorKind, RunReport, RunStatus, WorkspaceScope } from "./types.ts";
 import { RunDeadline } from "./runtime/deadline.ts";
+import { createMetricsCollector, type ModelTurnMetric } from "./metrics.ts";
 import {
   applyArtifact,
   cleanupIsolation,
@@ -891,6 +892,7 @@ export function taskForJson(task: TaskRecord) {
     kind: task.kind,
     duration_ms: task.durationMs,
     turns: task.turns,
+    durations: task.durations,
     check: task.check,
     ...reportForJson(task.report),
   };
@@ -911,6 +913,7 @@ function batchForJson(record: SessionRecord) {
     cwd: record.cwd,
     isolation: record.isolation,
     tasks: (record.tasks ?? []).map(taskForJson),
+    model_turns: record.modelTurns,
     tokens: record.tokens,
     feedback_command: `lh feedback ${record.id} --task <id> <pass|fail> --notes "<verified how / what went wrong>"`,
   };
@@ -939,6 +942,7 @@ function sessionForJson(record: SessionRecord) {
     check: record.check,
     report: reportForJson(record.report),
     tasks: record.tasks ? record.tasks.map(taskForJson) : undefined,
+    model_turns: record.modelTurns,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<verified how / what went wrong>"`,
   };
 }
@@ -1163,24 +1167,16 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   let promptLastTokens = 0;
   let promptTotalTokens = 0;
   let completionTokens = 0;
-  let modelMs = 0;
-  let toolMs = 0;
   let checkMs = 0;
-  let ttftMs: number | undefined;
+  const metrics = createMetricsCollector();
   const onEvent = (e: AgentEvent) => {
+    metrics.collect(e);
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
       promptLastTokens = e.promptTokens;
       promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
-    } else if (e.type === "timing") {
-      if (e.phase === "model") {
-        modelMs += e.durationMs;
-        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
-      } else {
-        toolMs += e.durationMs;
-      }
     }
     progress?.(e);
   };
@@ -1375,7 +1371,17 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     error,
     errorKind,
     durationMs,
-    durations: { total_ms: durationMs, model_ms: modelMs, tool_ms: toolMs, check_ms: checkMs, ttft_ms: ttftMs },
+    durations: {
+      total_ms: durationMs,
+      model_ms: metrics.totals.modelMs,
+      tool_ms: metrics.totals.toolMs,
+      check_ms: checkMs,
+      ttft_ms: metrics.totals.ttftMs,
+      model_prompt_eval_ms: metrics.totals.promptEvalMs,
+      model_eval_ms: metrics.totals.evalMs,
+      load_ms: metrics.totals.loadMs,
+    },
+    modelTurns: metrics.modelTurns,
     turns,
     toolCalls,
     tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
@@ -1426,7 +1432,7 @@ function summarizeTasks(executions: TaskExecution[]): string {
   return `${executions.length} task${executions.length === 1 ? "" : "s"}: ${parts.join(", ")}`;
 }
 
-function toTaskRecords(executions: TaskExecution[]): TaskRecord[] {
+function toTaskRecords(executions: TaskExecution[], modelTurns: ModelTurnMetric[] = []): TaskRecord[] {
   return executions.map((e) => ({
     id: e.task.id,
     kind: e.task.kind,
@@ -1435,7 +1441,21 @@ function toTaskRecords(executions: TaskExecution[]): TaskRecord[] {
     turns: e.turns,
     check: e.check,
     report: e.report,
+    durations: taskDurations(e.durationMs, modelTurns.filter((turn) => turn.task_id === e.task.id)),
   }));
+}
+
+function taskDurations(totalMs: number, turns: ModelTurnMetric[]): SessionRecord["durations"] {
+  const sum = (key: "duration_ms" | "load_ms" | "prompt_eval_ms" | "eval_ms") =>
+    turns.reduce((total, turn) => total + (turn[key] ?? 0), 0);
+  return {
+    total_ms: totalMs,
+    model_ms: sum("duration_ms"),
+    ttft_ms: turns.find((turn) => turn.ttft_ms !== undefined)?.ttft_ms,
+    load_ms: sum("load_ms"),
+    model_prompt_eval_ms: sum("prompt_eval_ms"),
+    model_eval_ms: sum("eval_ms"),
+  };
 }
 
 function printBatchSummary(record: SessionRecord, executions: TaskExecution[]): void {
@@ -1584,24 +1604,17 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   let promptLastTokens = 0;
   let promptTotalTokens = 0;
   let completionTokens = 0;
-  let modelMs = 0;
-  let toolMs = 0;
   let checkMs = 0;
-  let ttftMs: number | undefined;
+  let currentTaskId: string | undefined;
+  const metrics = createMetricsCollector(() => currentTaskId);
   const onEvent = (e: AgentEvent) => {
+    metrics.collect(e);
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
       promptLastTokens = e.promptTokens;
       promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
-    } else if (e.type === "timing") {
-      if (e.phase === "model") {
-        modelMs += e.durationMs;
-        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
-      } else {
-        toolMs += e.durationMs;
-      }
     }
     progress?.(e);
   };
@@ -1677,6 +1690,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       };
     }
     const agent = d.createAgent(systemPrompt, task, scope);
+    currentTaskId = task.id;
     currentAgent = agent;
     const checkRetries = task.checkRetries ?? 2;
     let status: RunStatus = "error";
@@ -1744,6 +1758,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       error = undefined;
       errorKind = undefined;
     }
+    currentTaskId = undefined;
     return {
       task,
       status,
@@ -1775,17 +1790,21 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       durationMs: d.now() - started,
       durations: {
         total_ms: d.now() - started,
-        model_ms: modelMs,
-        tool_ms: toolMs,
+        model_ms: metrics.totals.modelMs,
+        tool_ms: metrics.totals.toolMs,
         check_ms: checkMs,
-        ttft_ms: ttftMs,
+        ttft_ms: metrics.totals.ttftMs,
+        model_prompt_eval_ms: metrics.totals.promptEvalMs,
+        model_eval_ms: metrics.totals.evalMs,
+        load_ms: metrics.totals.loadMs,
       },
       turns,
       toolCalls,
       tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),
       report: mergeReports(execs.map((e) => e.report)),
       messages: execs.flatMap((e) => (e.messages ? [...e.messages] : [])),
-      tasks: toTaskRecords(execs),
+      tasks: toTaskRecords(execs, metrics.modelTurns),
+      modelTurns: metrics.modelTurns,
       isolation,
     };
   };
@@ -2793,6 +2812,7 @@ function scoutForJson(record: SessionRecord) {
     dimensions: record.dimensions,
     cwd: record.cwd,
     kind: record.kind,
+    model_turns: record.modelTurns,
     feedback_command: `lh feedback ${record.id} <pass|fail> --notes "<scout useful? cited ranges verified?>"`,
   };
 }
@@ -2881,23 +2901,15 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
   let promptLastTokens = 0;
   let promptTotalTokens = 0;
   let completionTokens = 0;
-  let modelMs = 0;
-  let toolMs = 0;
-  let ttftMs: number | undefined;
+  const metrics = createMetricsCollector();
   const onEvent = (e: AgentEvent) => {
+    metrics.collect(e);
     if (e.type === "turn_end") turns++;
     else if (e.type === "tool_start") toolCalls++;
     else if (e.type === "usage") {
       promptLastTokens = e.promptTokens;
       promptTotalTokens += e.promptTokens;
       completionTokens += e.evalTokens;
-    } else if (e.type === "timing") {
-      if (e.phase === "model") {
-        modelMs += e.durationMs;
-        if (ttftMs === undefined && e.ttftMs !== undefined) ttftMs = e.ttftMs;
-      } else {
-        toolMs += e.durationMs;
-      }
     }
     progress?.(e);
   };
@@ -2996,7 +3008,17 @@ export async function cmdScout(argv: string[], deps: ScoutCliDeps = {}): Promise
     error,
     errorKind,
     durationMs,
-    durations: { total_ms: durationMs, model_ms: modelMs, tool_ms: toolMs, check_ms: 0, ttft_ms: ttftMs },
+    durations: {
+      total_ms: durationMs,
+      model_ms: metrics.totals.modelMs,
+      tool_ms: metrics.totals.toolMs,
+      check_ms: 0,
+      ttft_ms: metrics.totals.ttftMs,
+      model_prompt_eval_ms: metrics.totals.promptEvalMs,
+      model_eval_ms: metrics.totals.evalMs,
+      load_ms: metrics.totals.loadMs,
+    },
+    modelTurns: metrics.modelTurns,
     turns,
     toolCalls,
     tokens: sessionTokens(promptLastTokens, promptTotalTokens, completionTokens),

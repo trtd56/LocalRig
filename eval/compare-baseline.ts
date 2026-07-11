@@ -19,6 +19,8 @@ interface Entry {
   durationSec?: number;
   promptTokens?: number;
   completionTokens?: number;
+  prefillTps?: number;
+  decodeTps?: number;
 }
 
 interface BaselineFile {
@@ -92,8 +94,8 @@ function main(): void {
   lines.push("");
   lines.push("## Per-task");
   lines.push("");
-  lines.push("| task | pass (base→cur) | duration base→cur (Δ) | promptTokens base→cur (Δ) | completionTokens base→cur (Δ) |");
-  lines.push("|---|---|---|---|---|");
+  lines.push("| task | pass (base→cur) | duration base→cur (Δ) | promptTokens base→cur (Δ) | completionTokens base→cur (Δ) | prefill tok/s base→cur | decode tok/s base→cur |");
+  lines.push("|---|---|---|---|---|---|---|");
 
   let basePassCount = 0;
   let curPassCount = 0;
@@ -114,7 +116,8 @@ function main(): void {
       `| ${task}${onlyIn} | ${pass(b?.passed)}→${pass(c?.passed)}${passFlag(b?.passed, c?.passed)} | ` +
         `${secs(b?.durationSec)}→${secs(c?.durationSec)} (${delta(b?.durationSec, c?.durationSec)}) | ` +
         `${int(b?.promptTokens)}→${int(c?.promptTokens)} (${delta(b?.promptTokens, c?.promptTokens)}) | ` +
-        `${int(b?.completionTokens)}→${int(c?.completionTokens)} (${delta(b?.completionTokens, c?.completionTokens)}) |`,
+        `${int(b?.completionTokens)}→${int(c?.completionTokens)} (${delta(b?.completionTokens, c?.completionTokens)}) | ` +
+        `${int(b?.prefillTps)}→${int(c?.prefillTps)} | ${int(b?.decodeTps)}→${int(c?.decodeTps)} |`,
     );
 
     if (b && c) {

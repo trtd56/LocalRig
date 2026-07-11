@@ -135,8 +135,17 @@ export interface ChatRequestOptions {
   think?: boolean;
   /** Ollama structured-output format, usually a JSON schema. */
   format?: unknown;
+  /** Ollama runner retention policy (top-level keep_alive request field). */
+  keep_alive?: string | number;
   /** Non-streaming completion usage callback. */
-  onUsage?: (usage: { promptTokens: number; evalTokens: number }) => void;
+  onUsage?: (usage: { promptTokens: number; evalTokens: number; timings?: ModelTimings }) => void;
+}
+
+export interface ModelTimings {
+  totalMs: number;
+  loadMs: number;
+  promptEvalMs: number;
+  evalMs: number;
 }
 
 export interface ChatChunk {
@@ -154,6 +163,7 @@ export interface ChatResponse {
   evalTokens: number;
   /** True when generation stopped because num_predict was exhausted. */
   truncated: boolean;
+  timings?: ModelTimings;
 }
 
 // ---------- Run outcome ----------
@@ -196,5 +206,17 @@ export type AgentEvent =
   | { type: "compact"; beforeTokens: number; afterTokens: number }
   | { type: "status"; message: string }
   /** Fine-grained runtime timing; session persistence may aggregate these. */
-  | { type: "timing"; phase: "model" | "tool"; durationMs: number; ttftMs?: number }
+  | {
+      type: "timing";
+      phase: "model" | "tool";
+      durationMs: number;
+      ttftMs?: number;
+      loadMs?: number;
+      promptEvalMs?: number;
+      evalMs?: number;
+      promptTokens?: number;
+      evalTokens?: number;
+      thinkingChars?: number;
+      interrupted?: boolean;
+    }
   | { type: "usage"; promptTokens: number; evalTokens: number; ctxPercent: number };

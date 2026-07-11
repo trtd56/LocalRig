@@ -18,6 +18,10 @@ interface OllamaStreamLine {
   done_reason?: string;
   prompt_eval_count?: number;
   eval_count?: number;
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_duration?: number;
+  eval_duration?: number;
   error?: string;
 }
 
@@ -91,6 +95,7 @@ export class OllamaClient {
     let promptTokens = 0;
     let evalTokens = 0;
     let doneReason = "";
+    let timings: ChatResponse["timings"];
 
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
@@ -128,6 +133,7 @@ export class OllamaClient {
           promptTokens = parsed.prompt_eval_count ?? 0;
           evalTokens = parsed.eval_count ?? 0;
           doneReason = parsed.done_reason ?? "";
+          timings = parseTimings(parsed);
         }
       }
     }
@@ -140,6 +146,7 @@ export class OllamaClient {
       promptTokens,
       evalTokens,
       truncated: doneReason === "length",
+      timings,
     };
   }
 
@@ -179,10 +186,39 @@ export class OllamaClient {
       message?: { content?: string };
       prompt_eval_count?: number;
       eval_count?: number;
+      total_duration?: number;
+      load_duration?: number;
+      prompt_eval_duration?: number;
+      eval_duration?: number;
       error?: string;
     };
     if (data.error) throw new Error(`Ollama error: ${data.error}`);
-    options.onUsage?.({ promptTokens: data.prompt_eval_count ?? 0, evalTokens: data.eval_count ?? 0 });
+    options.onUsage?.({
+      promptTokens: data.prompt_eval_count ?? 0,
+      evalTokens: data.eval_count ?? 0,
+      timings: parseTimings(data),
+    });
     return data.message?.content ?? "";
   }
+}
+
+function parseTimings(value: {
+  total_duration?: number;
+  load_duration?: number;
+  prompt_eval_duration?: number;
+  eval_duration?: number;
+}): ChatResponse["timings"] {
+  const values = [
+    value.total_duration,
+    value.load_duration,
+    value.prompt_eval_duration,
+    value.eval_duration,
+  ];
+  if (values.some((item) => typeof item !== "number" || !Number.isFinite(item) || item < 0)) return undefined;
+  return {
+    totalMs: value.total_duration! / 1_000_000,
+    loadMs: value.load_duration! / 1_000_000,
+    promptEvalMs: value.prompt_eval_duration! / 1_000_000,
+    evalMs: value.eval_duration! / 1_000_000,
+  };
 }

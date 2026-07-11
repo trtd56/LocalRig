@@ -341,6 +341,8 @@ interface TaskResult {
   completionTokens?: number;
   turns?: number;
   toolCalls?: number;
+  prefillTps?: number;
+  decodeTps?: number;
   /** ErrorKind string (see src/types.ts); harness only emits this if/when its --json output grows an error_kind field. */
   errorKind?: string;
   /** Dollar cost of the run (claude/claude-delegate only, from total_cost_usd). */
@@ -432,6 +434,8 @@ interface StructuredMetrics {
   turns?: number;
   toolCalls?: number;
   errorKind?: string;
+  prefillTps?: number;
+  decodeTps?: number;
   costUsd?: number;
   usage?: ClaudeUsageBreakdown;
 }
@@ -468,12 +472,21 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
     // v2 reports total prompt/completion usage across every turn. Fall back to
     // the v1 aliases when analysing archived result files.
     const tokens = asRecord(obj.tokens);
+    const durations = asRecord(obj.durations);
+    const promptTokens = tokens ? num(tokens.prompt_total) ?? num(tokens.prompt) : undefined;
+    const completionTokens = tokens ? num(tokens.completion_total) ?? num(tokens.completion) : undefined;
+    const promptEvalMs = durations ? num(durations.model_prompt_eval_ms) : undefined;
+    const evalMs = durations ? num(durations.model_eval_ms) : undefined;
     return {
       status: str(obj.status),
       turns: num(obj.turns),
       toolCalls: num(obj.tool_calls),
-      promptTokens: tokens ? num(tokens.prompt_total) ?? num(tokens.prompt) : undefined,
-      completionTokens: tokens ? num(tokens.completion_total) ?? num(tokens.completion) : undefined,
+      promptTokens,
+      completionTokens,
+      prefillTps: promptTokens !== undefined && promptEvalMs !== undefined && promptEvalMs > 0
+        ? promptTokens / (promptEvalMs / 1000) : undefined,
+      decodeTps: completionTokens !== undefined && evalMs !== undefined && evalMs > 0
+        ? completionTokens / (evalMs / 1000) : undefined,
       errorKind: str(obj.error_kind),
     };
   }
@@ -527,7 +540,9 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
     // stdout (parsed out by extractStructuredMetrics).
     return {
       cmd: "bun",
-      args: ["run", path.join(ROOT, "src", "index.ts"), "-p", prompt, "-v", "--json", "--max-time", "1500"],
+      // Eval fixtures are disposable temp-directory copies, not Git repositories.
+      // Run directly inside that copy instead of requiring worktree isolation.
+      args: ["run", path.join(ROOT, "src", "index.ts"), "-p", prompt, "-v", "--json", "--in-place", "--max-time", "1500"],
     };
   }
   if (isClaudeArm(agent)) {

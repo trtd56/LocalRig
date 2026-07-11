@@ -272,7 +272,14 @@ describe("session store", () => {
   test("persists provider/tool/check/TTFT duration components", () => {
     saveSession(makeRecord("timings", {
       durationMs: 1000,
-      durations: { total_ms: 1000, model_ms: 700, tool_ms: 150, check_ms: 100, ttft_ms: 25 },
+      durations: {
+        total_ms: 1000, model_ms: 700, tool_ms: 150, check_ms: 100, ttft_ms: 25,
+        model_prompt_eval_ms: 400, model_eval_ms: 250, load_ms: 10,
+      },
+      modelTurns: [{
+        turn: 1, duration_ms: 700, prompt_eval_ms: 400, eval_ms: 250,
+        prompt_tokens: 1000, eval_tokens: 100, prefill_tps: 2500, decode_tps: 400,
+      }, { turn: 0, duration_ms: 1 }, { turn: 2, duration_ms: -1 }],
     }));
     expect(loadSession("timings")!.durations).toEqual({
       total_ms: 1000,
@@ -280,7 +287,16 @@ describe("session store", () => {
       tool_ms: 150,
       check_ms: 100,
       ttft_ms: 25,
+      model_prompt_eval_ms: 400,
+      model_eval_ms: 250,
+      load_ms: 10,
     });
+    expect(loadSession("timings")!.modelTurns).toEqual([{
+      turn: 1, duration_ms: 700, prompt_eval_ms: 400, eval_ms: 250,
+      prompt_tokens: 1000, eval_tokens: 100, prefill_tps: 2500, decode_tps: 400,
+      task_id: undefined, ttft_ms: undefined, load_ms: undefined, thinking_chars: undefined,
+      interrupted: undefined, context_event: undefined,
+    }]);
   });
 });
 
