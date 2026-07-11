@@ -61,6 +61,32 @@ const SUPPORTED_AGENTS = new Set([
   "claude-scout",
   "claude-research",
 ]);
+
+interface HarnessArmConfig { root?: string; env?: Record<string, string>; }
+const HARNESS_ARMS = (() => {
+  const raw = process.env.LH_EVAL_HARNESS_ARMS;
+  if (!raw) return new Map<string, HarnessArmConfig>();
+  const parsed = JSON.parse(raw) as Record<string, HarnessArmConfig>;
+  const entries: Array<[string, HarnessArmConfig]> = [];
+  for (const [name, config] of Object.entries(parsed)) {
+    if (!/^harness-[A-Za-z0-9_-]+$/.test(name) || !config || typeof config !== "object") {
+      throw new Error(`invalid LH_EVAL_HARNESS_ARMS entry: ${name}`);
+    }
+    if (config.env && Object.values(config.env).some((value) => typeof value !== "string")) {
+      throw new Error(`invalid env values for harness arm: ${name}`);
+    }
+    entries.push([name, config]);
+  }
+  return new Map(entries);
+})();
+
+function isHarnessArm(agent: string): boolean {
+  return agent === "harness" || HARNESS_ARMS.has(agent);
+}
+
+function harnessArm(agent: string): HarnessArmConfig {
+  return HARNESS_ARMS.get(agent) ?? {};
+}
 // Claude Code writes each session's transcript to
 // ~/.claude/projects/<slug>/<session-id>.jsonl, where <slug> is the run's cwd
 // with every non-[A-Za-z0-9-] char replaced by '-' (verified against real dirs:
@@ -468,7 +494,7 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
   const asRecord = (v: unknown): Record<string, unknown> | undefined =>
     typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
 
-  if (agent === "harness") {
+  if (isHarnessArm(agent)) {
     // v2 reports total prompt/completion usage across every turn. Fall back to
     // the v1 aliases when analysing archived result files.
     const tokens = asRecord(obj.tokens);
@@ -529,7 +555,8 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
 }
 
 function agentCommand(agent: string, prompt: string): { cmd: string; args: string[] } {
-  if (agent === "harness") {
+  if (isHarnessArm(agent)) {
+    const harnessRoot = path.resolve(harnessArm(agent).root ?? ROOT);
     // --max-time makes the harness wrap up gracefully before the runner's
     // 30-min SIGKILL, which becomes a backstop rather than the primary limit.
     // -v and --json together: per src/index.ts runOneShot(), showProgress =
@@ -542,7 +569,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
       cmd: "bun",
       // Eval fixtures are disposable temp-directory copies, not Git repositories.
       // Run directly inside that copy instead of requiring worktree isolation.
-      args: ["run", path.join(ROOT, "src", "index.ts"), "-p", prompt, "-v", "--json", "--in-place", "--max-time", "1500"],
+      args: ["run", path.join(harnessRoot, "src", "index.ts"), "-p", prompt, "-v", "--json", "--in-place", "--max-time", "1500"],
     };
   }
   if (isClaudeArm(agent)) {
@@ -892,6 +919,7 @@ async function runTask(
   const isPreprocess = isPreprocessArm(agent);
   const isHaiku = agent === "claude-delegate-haiku";
   const env: NodeJS.ProcessEnv = { ...process.env };
+  if (isHarnessArm(agent)) Object.assign(env, harnessArm(agent).env ?? {});
   let lhHome: string | undefined;
   if (isDelegate || isPreprocess) {
     // Suffix keeps arms from sharing an LH_HOME (claude-delegate → <task>,
@@ -906,7 +934,7 @@ async function runTask(
     env.BASH_DEFAULT_TIMEOUT_MS = "2100000";
   }
 
-  const model = agent === "harness" ? (process.env.LH_MODEL ?? defaultConfig.model) : CLAUDE_ORCHESTRATOR_MODEL;
+  const model = isHarnessArm(agent) ? (env.LH_MODEL ?? defaultConfig.model) : CLAUDE_ORCHESTRATOR_MODEL;
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);
   const { cmd, args } = agentCommand(agent, spec.prompt);
   const timeoutMs = isDelegate ? DELEGATE_TASK_TIMEOUT_MS : TASK_TIMEOUT_MS;
@@ -1003,7 +1031,7 @@ async function main() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
   }
-  const unsupportedAgents = options.agents.filter((agent) => !SUPPORTED_AGENTS.has(agent));
+  const unsupportedAgents = options.agents.filter((agent) => !SUPPORTED_AGENTS.has(agent) && !isHarnessArm(agent));
   if (unsupportedAgents.length > 0) {
     console.error(`unknown agent: ${unsupportedAgents.join(", ")}`);
     process.exit(2);
@@ -1027,10 +1055,10 @@ async function main() {
   const environmentByAgent = new Map<string, ReturnType<typeof captureEnvironmentMetadata>>();
   for (const agent of options.agents) {
     const metadataModel =
-      agent === "harness" || (isDelegateArm(agent) && agent !== "claude-delegate-haiku") || isPreprocessArm(agent)
-        ? (process.env.LH_MODEL ?? defaultConfig.model)
+      isHarnessArm(agent) || (isDelegateArm(agent) && agent !== "claude-delegate-haiku") || isPreprocessArm(agent)
+        ? (harnessArm(agent).env?.LH_MODEL ?? process.env.LH_MODEL ?? defaultConfig.model)
         : CLAUDE_ORCHESTRATOR_MODEL;
-    environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, ROOT));
+    environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, path.resolve(harnessArm(agent).root ?? ROOT)));
   }
 
   const sequenceByAgent = new Map<string, number>();

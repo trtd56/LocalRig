@@ -14,6 +14,7 @@ describe("defaultConfig", () => {
     expect(defaultConfig.numPredict).toBe(16384);
     expect(defaultConfig.numCtx).toBe(32768);
     expect(defaultConfig.keepAlive).toBe("30m");
+    expect(defaultConfig.numBatch).toBeUndefined();
   });
 
   test("dead maxRepairAttempts knob is gone", () => {

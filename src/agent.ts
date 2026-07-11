@@ -369,6 +369,7 @@ export class Agent {
         tools,
         {
           num_ctx: this.config.numCtx,
+          num_batch: this.config.numBatch,
           num_predict: this.config.numPredict,
           temperature: this.config.temperature,
           top_p: this.config.topP,

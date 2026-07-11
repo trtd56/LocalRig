@@ -58,6 +58,7 @@ export class OllamaClient {
       stream: true,
       options: {
         num_ctx: options.num_ctx,
+        num_batch: options.num_batch,
         num_predict: options.num_predict ?? -1,
         temperature: options.temperature,
         top_p: options.top_p,
@@ -165,6 +166,7 @@ export class OllamaClient {
       think: options.think ?? false,
       options: {
         num_ctx: options.num_ctx,
+        num_batch: options.num_batch,
         num_predict: options.num_predict ?? 4096,
         temperature: options.temperature ?? 0.2,
       },

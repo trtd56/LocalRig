@@ -172,7 +172,7 @@ export class ContextManager {
     try {
       summary = await this.client.complete(
         request,
-        { num_ctx: this.config.numCtx, num_predict: 4096, temperature: 0.1 },
+        { num_ctx: this.config.numCtx, num_batch: this.config.numBatch, num_predict: 4096, temperature: 0.1 },
         signal,
       );
     } catch (err) {

@@ -9,6 +9,8 @@ export interface Config {
   /** How long Ollama keeps the model runner resident; "0" unloads it. */
   keepAlive: string;
   numCtx: number;
+  /** Ollama prompt batch size; undefined keeps the server/model default. */
+  numBatch?: number;
   numPredict: number;
   temperature: number;
   topP: number;
@@ -120,6 +122,7 @@ export const defaultConfig: Config = {
   model: resolvedModel,
   keepAlive: process.env.LH_KEEP_ALIVE ?? "30m",
   numCtx: Number(process.env.LH_NUM_CTX ?? 32768),
+  numBatch: process.env.LH_NUM_BATCH === undefined ? undefined : Number(process.env.LH_NUM_BATCH),
   numPredict: 16384,
   temperature: Number(process.env.LH_TEMPERATURE ?? profile.temperature),
   topP: Number(process.env.LH_TOP_P ?? profile.topP),
