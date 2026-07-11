@@ -45,9 +45,9 @@ describe("parseManifest", () => {
 
   test("keeps optional fields and floors check_retries", () => {
     const tasks = parseManifest(
-      JSON.stringify([{ id: "docs", prompt: "tweak", kind: "doc-tweak", check: "grep -q x f", check_retries: 3.9 }]),
+      JSON.stringify([{ id: "docs", prompt: "tweak", kind: "doc-tweak", think: false, check: "grep -q x f", check_retries: 3.9 }]),
     );
-    expect(tasks[0]).toEqual({ id: "docs", prompt: "tweak", kind: "doc-tweak", check: "grep -q x f", checkRetries: 3 });
+    expect(tasks[0]).toEqual({ id: "docs", prompt: "tweak", kind: "doc-tweak", think: false, check: "grep -q x f", checkRetries: 3 });
   });
 
   test("parses per-task allowed_paths and protected_paths", () => {
@@ -78,6 +78,7 @@ describe("parseManifest", () => {
     ["a missing prompt", JSON.stringify([{ id: "a" }]), /"prompt" is required/],
     ["a blank prompt", JSON.stringify([{ id: "a", prompt: "   " }]), /"prompt" is required/],
     ["a non-string kind", JSON.stringify([{ id: "a", prompt: "p", kind: 5 }]), /"kind" must be a string/],
+    ["a non-boolean think", JSON.stringify([{ id: "a", prompt: "p", think: "no" }]), /"think" must be a boolean/],
     ["a non-string check", JSON.stringify([{ id: "a", prompt: "p", check: 5 }]), /"check" must be a string/],
     ["a negative check_retries", JSON.stringify([{ id: "a", prompt: "p", check_retries: -1 }]), /"check_retries"/],
   ];

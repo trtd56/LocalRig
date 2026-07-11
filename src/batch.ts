@@ -18,6 +18,8 @@ export interface BatchTask {
   id: string;
   prompt: string;
   kind?: string;
+  /** Per-task override for model reasoning; omitted preserves model default. */
+  think?: boolean;
   check?: string;
   /** Repair attempts after a failing check; defaults to the one-shot 2. */
   checkRetries?: number;
@@ -87,6 +89,10 @@ export function parseManifest(text: string): BatchTask[] {
     if (raw.kind !== undefined) {
       if (typeof raw.kind !== "string") throw new BatchConfigError(`task ${id}: "kind" must be a string`);
       task.kind = raw.kind;
+    }
+    if (raw.think !== undefined) {
+      if (typeof raw.think !== "boolean") throw new BatchConfigError(`task ${id}: "think" must be a boolean`);
+      task.think = raw.think;
     }
     if (raw.check !== undefined) {
       if (typeof raw.check !== "string") throw new BatchConfigError(`task ${id}: "check" must be a string`);

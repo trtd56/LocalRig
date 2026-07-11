@@ -90,6 +90,7 @@ lh research -q "この2資料の相違点は?" https://example.com/a https://exa
 | `--in-place` | private worktreeを使わず、従来どおり指定cwdを直接変更する |
 
 Ollama runnerは既定で全リクエストに`keep_alive: "30m"`を送り、タスク間のモデル再ロードを抑える。メモリを即時解放したい場合は`LH_KEEP_ALIVE=0`を指定する。
+prefillのA/Bでは`LH_NUM_BATCH=1024`のようにOllamaの`num_batch`を指定できる（未指定時はserver/model既定）。batch manifestの各taskには`"think": false`または`true`を任意指定できる。
 | `--resume ID` | 保存済みセッションの transcript を復元し、`-p` の指示を追撃として追記して再実行(ワンショット専用)。新 `session_id` を発行し `resumed_from` を記録。`--cwd` 未指定なら元セッションの cwd を継承。不明IDは `error_kind:"config"` |
 | `--auto` | cwd/scope境界とmacOS sandboxの下で自動承認(ワンショット/バッチの既定) |
 | `--yolo` | sandboxなしのhost bashを明示的に許可(private worktreeとは併用不可で、`--in-place`が必要) |

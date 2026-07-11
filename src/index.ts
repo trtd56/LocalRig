@@ -1629,7 +1629,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   // check runner, and the system clock. Tests inject fakes via `deps`.
   const d: BatchDeps = deps ?? {
     now,
-    createAgent: (sp, _task, scope) => new Agent(config, cwd, onEvent, denyPermission, sp, undefined, undefined, scope, deadline),
+    createAgent: (sp, task, scope) => new Agent(config, cwd, onEvent, denyPermission, sp, undefined, task.think, scope, deadline),
     applyBudget: (ms) => {
       config.maxTimeMs = ms;
     },

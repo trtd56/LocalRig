@@ -139,6 +139,7 @@ research adapterはライブWebと実モデルから切り離した固定fixture
 ### 切り替えの入口
 - `LH_MODEL` 環境変数(または `--model` CLIフラグ)でモデル名を指定する。
 - `LH_KEEP_ALIVE`はOllama runnerの常駐時間(既定`30m`)。メモリを即時解放する場合は`0`。
+- `LH_NUM_BATCH`はprefill計測用のOllama `num_batch` override。未指定ならserver/model既定。
 - サンプリング値(temperature/top_p/top_k/presence_penalty/thinkBudgetChars)は `src/config.ts` の `MODEL_PROFILES`(モデル名の大文字小文字無視・部分一致、先勝ち)から `resolveProfile()` が自動解決する。優先順位は「CLIフラグ/環境変数(`LH_TEMPERATURE` 等)で明示指定 > `MODEL_PROFILES` のパターンマッチ > どのパターンにも一致しない場合は検証済みQwen値(`DEFAULT_PROFILE`)にフォールバック」——未検証のモデルを未検証の値ではなく既知の安全値に倒す設計。
 - 新モデル系統を採用する場合、`MODEL_PROFILES` に1エントリ(パターン文字列 + `ModelProfile` の5フィールド)を追加する。
 
