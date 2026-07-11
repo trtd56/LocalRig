@@ -25,6 +25,69 @@ interface OllamaStreamLine {
   error?: string;
 }
 
+export interface RunnerModel {
+  name: string;
+  model?: string;
+  digest?: string;
+  size?: number;
+  size_vram?: number;
+  context_length?: number;
+  expires_at?: string;
+}
+
+export interface RunnerSnapshot {
+  captured_at: string;
+  models?: RunnerModel[];
+  error?: string;
+}
+
+function record(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+/** Parse Ollama /api/ps while ignoring unknown additive fields. */
+export function parseRunnerPs(value: unknown): RunnerModel[] {
+  const root = record(value);
+  if (!root || !Array.isArray(root.models)) return [];
+  const models: RunnerModel[] = [];
+  for (const raw of root.models) {
+    const item = record(raw);
+    if (!item || typeof item.name !== "string" || !item.name) continue;
+    const model: RunnerModel = { name: item.name };
+    for (const key of ["model", "digest", "expires_at"] as const) {
+      if (typeof item[key] === "string") model[key] = item[key] as string;
+    }
+    for (const key of ["size", "size_vram", "context_length"] as const) {
+      if (typeof item[key] === "number" && Number.isFinite(item[key]) && (item[key] as number) >= 0) {
+        model[key] = item[key] as number;
+      }
+    }
+    models.push(model);
+  }
+  return models;
+}
+
+/** Best-effort runner evidence collection. This function never rejects. */
+export async function fetchRunnerSnapshot(baseUrl: string, timeoutMs = 2000): Promise<RunnerSnapshot> {
+  const captured_at = new Date().toISOString();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(1, timeoutMs));
+  try {
+    const response = await fetch(`${baseUrl.replace(/\/$/, "")}/api/ps`, { signal: controller.signal });
+    if (!response.ok) return { captured_at, error: `Ollama HTTP ${response.status}` };
+    const value = await response.json();
+    const root = record(value);
+    if (!root || !Array.isArray(root.models)) return { captured_at, error: "invalid /api/ps response" };
+    return { captured_at, models: parseRunnerPs(value) };
+  } catch (error) {
+    return { captured_at, error: error instanceof Error ? error.message : String(error) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /** Strip harness-internal fields (underscore-prefixed) before sending. */
 function wireMessage(m: ChatMessage): Record<string, unknown> {
   const out: Record<string, unknown> = { role: m.role, content: m.content };

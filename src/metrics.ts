@@ -4,6 +4,9 @@ export interface ModelTurnMetric {
   turn: number;
   task_id?: string;
   duration_ms: number;
+  total_duration_ms?: number;
+  queue_residual_ms?: number;
+  client_overhead_ms?: number;
   ttft_ms?: number;
   load_ms?: number;
   prompt_eval_ms?: number;
@@ -50,6 +53,9 @@ export function createMetricsCollector(taskId?: () => string | undefined) {
       turn: modelTurns.length + 1,
       task_id: taskId?.(),
       duration_ms: event.durationMs,
+      total_duration_ms: event.totalMs,
+      queue_residual_ms: residual(event.totalMs, event.loadMs, event.promptEvalMs, event.evalMs),
+      client_overhead_ms: difference(event.durationMs, event.totalMs),
       ttft_ms: event.ttftMs,
       load_ms: event.loadMs,
       prompt_eval_ms: event.promptEvalMs,
@@ -65,6 +71,17 @@ export function createMetricsCollector(taskId?: () => string | undefined) {
     pendingContextEvent = undefined;
   };
   return { collect, modelTurns, totals };
+}
+
+function residual(total: number | undefined, ...parts: Array<number | undefined>): number | undefined {
+  if (total === undefined || parts.some((part) => part === undefined)) return undefined;
+  let used = 0;
+  for (const part of parts) used += part!;
+  return Math.max(0, total - used);
+}
+
+function difference(total: number | undefined, part: number | undefined): number | undefined {
+  return total === undefined || part === undefined ? undefined : Math.max(0, total - part);
 }
 
 function rate(tokens: number | undefined, durationMs: number | undefined): number | undefined {

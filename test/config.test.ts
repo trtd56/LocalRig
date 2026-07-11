@@ -2,8 +2,8 @@
 
 import { describe, expect, test } from "bun:test";
 import * as path from "node:path";
-import { defaultConfig, resolveProfile } from "../src/config.ts";
-import { parseArgs } from "../src/index.ts";
+import { defaultConfig, parseThinkByKind, resolveProfile } from "../src/config.ts";
+import { parseArgs, resolveThink } from "../src/index.ts";
 
 describe("defaultConfig", () => {
   test("new knobs have their documented defaults", () => {
@@ -15,6 +15,7 @@ describe("defaultConfig", () => {
     expect(defaultConfig.numCtx).toBe(32768);
     expect(defaultConfig.keepAlive).toBe("30m");
     expect(defaultConfig.numBatch).toBeUndefined();
+    expect(defaultConfig.thinkByKind).toEqual({});
   });
 
   test("dead maxRepairAttempts knob is gone", () => {
@@ -91,6 +92,8 @@ describe("env-var parsing", () => {
         LH_PRESENCE_PENALTY: "0.5",
         LH_MAX_TIME: "42",
         LH_NUM_CTX: "65536",
+        LH_NUM_PREDICT: "4321",
+        LH_THINK_BY_KIND: "docs:off,rename:on",
       },
     });
     expect(proc.exitCode).toBe(0);
@@ -100,6 +103,8 @@ describe("env-var parsing", () => {
     expect(out.presencePenalty).toBe(0.5);
     expect(out.maxTimeMs).toBe(42_000); // seconds → ms
     expect(out.numCtx).toBe(65536);
+    expect(out.numPredict).toBe(4321);
+    expect(out.thinkByKind).toEqual({ docs: false, rename: true });
   });
 
   test("LH_TEMPERATURE / LH_TOP_P / LH_TOP_K beat the model's profile", () => {
@@ -119,6 +124,22 @@ describe("env-var parsing", () => {
     expect(out.temperature).toBe(0.9);
     expect(out.topP).toBe(0.5);
     expect(out.topK).toBe(7);
+  });
+});
+
+describe("thinking resolution", () => {
+  test("parses kind settings and rejects malformed entries", () => {
+    expect(parseThinkByKind("docs:off, rename:on")).toEqual({ docs: false, rename: true });
+    expect(() => parseThinkByKind("docs:maybe")).toThrow(/invalid/);
+  });
+
+  test("explicit flags beat kind defaults and omission preserves undefined", () => {
+    const mapped = parseArgs(["-p", "x", "--kind", "docs"]);
+    mapped.config.thinkByKind = { docs: false };
+    expect(resolveThink(mapped)).toBe(false);
+    expect(resolveThink(parseArgs(["-p", "x", "--kind", "docs", "--think"]))).toBe(true);
+    expect(resolveThink(parseArgs(["-p", "x", "--kind", "docs", "--no-think"]))).toBe(false);
+    expect(resolveThink(parseArgs(["-p", "x"]))).toBeUndefined();
   });
 });
 

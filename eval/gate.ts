@@ -30,6 +30,7 @@ function parseArgs(argv: string[]): GateOptions {
     maxQualityDrop: 0,
     minUpperCostSavingsUsd: 0,
     maxP95WallSec: 1800,
+    skipCost: false,
   };
   const valueAfter = (index: number, flag: string): string => {
     const value = argv[index + 1];
@@ -47,7 +48,8 @@ function parseArgs(argv: string[]): GateOptions {
       thresholds.minUpperCostSavingsUsd = parseFinite(valueAfter(index++, arg), arg);
     } else if (arg === "--max-p95-sec" || arg === "--max-p95-wall-sec") {
       thresholds.maxP95WallSec = parseFinite(valueAfter(index++, arg), arg);
-    } else if (arg === "--json") json = true;
+    } else if (arg === "--skip-cost") thresholds.skipCost = true;
+    else if (arg === "--json") json = true;
     else throw new Error(`unknown option: ${arg}`);
   }
   if (thresholds.maxQualityDrop < 0 || thresholds.maxQualityDrop > 1) {

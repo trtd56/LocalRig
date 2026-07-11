@@ -71,6 +71,8 @@ export interface GateThresholds {
   maxQualityDrop: number;
   minUpperCostSavingsUsd: number;
   maxP95WallSec: number;
+  /** Harness-vs-harness comparisons have no billed upper-level cost. */
+  skipCost?: boolean;
 }
 
 export interface GateCheck {
@@ -429,11 +431,13 @@ export function evaluateGate(comparison: RepeatedComparison, thresholds: GateThr
     },
     {
       name: "positive_upper_cost_savings",
-      passed: completeCosts && savings !== null && savings > thresholds.minUpperCostSavingsUsd,
+      passed: thresholds.skipCost === true || (completeCosts && savings !== null && savings > thresholds.minUpperCostSavingsUsd),
       actual: savings,
       threshold: thresholds.minUpperCostSavingsUsd,
       message:
-        !completeCosts
+        thresholds.skipCost
+          ? "upper-level cost check skipped"
+          : !completeCosts
           ? `every balanced sample needs paired upper-level cost (${comparison.upperCostSavings.pairedSamples}/${comparison.baseline.sampleCount})`
           : savings === null
           ? "paired upper-level cost is unavailable"

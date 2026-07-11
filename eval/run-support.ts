@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import type { RunnerSnapshot } from "../src/provider/ollama.ts";
 
 export type CacheState = "cold" | "warm";
 
@@ -68,6 +69,10 @@ export interface RunMetadata {
   sequenceInArm: number;
   cacheState: CacheState;
   environment: EnvironmentMetadata;
+  runners?: { before?: RunnerSnapshot; after?: RunnerSnapshot };
+  startedAt?: string;
+  endedAt?: string;
+  environmentRetries?: number;
 }
 
 export const MAX_REPEAT = 1_000;

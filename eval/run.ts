@@ -20,6 +20,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { defaultConfig } from "../src/config.ts";
+import { fetchRunnerSnapshot } from "../src/provider/ollama.ts";
 import type { FeedbackRecord, SessionRecord } from "../src/session.ts";
 import {
   buildRunPlan,
@@ -29,6 +30,7 @@ import {
   safeRunId,
   type RunMetadata,
 } from "./run-support.ts";
+import { foreignEntriesForInterval, startDaemonWatcher, type WatchEntry } from "./watch-daemon.ts";
 
 const ROOT = path.resolve(import.meta.dir, "..");
 const TASKS_DIR = path.join(ROOT, "eval", "tasks");
@@ -938,9 +940,14 @@ async function runTask(
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);
   const { cmd, args } = agentCommand(agent, spec.prompt);
   const timeoutMs = isDelegate ? DELEGATE_TASK_TIMEOUT_MS : TASK_TIMEOUT_MS;
+  const ollamaUrl = env.OLLAMA_HOST ?? defaultConfig.ollamaUrl;
+  runMetadata.startedAt = new Date().toISOString();
+  runMetadata.runners = { before: await fetchRunnerSnapshot(ollamaUrl) };
   const started = Date.now();
   const agentRun = await run(cmd, args, workdir, timeoutMs, env);
   const durationSec = Math.round((Date.now() - started) / 1000);
+  runMetadata.runners.after = await fetchRunnerSnapshot(ollamaUrl);
+  runMetadata.endedAt = new Date().toISOString();
 
   const testFilesModified: string[] = [];
   for (const [f, h] of testHashes) {
@@ -1061,8 +1068,24 @@ async function main() {
     environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, path.resolve(harnessArm(agent).root ?? ROOT)));
   }
 
+  const extraWatchUrls = (process.env.LH_EVAL_WATCH_URLS ?? "").split(",").map((url) => url.trim()).filter(Boolean);
+  const evaluationUrls = [...new Set(options.agents.map((agent) =>
+    harnessArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl,
+  ))];
+  const watchUrls = [...new Set([
+    ...evaluationUrls,
+    ...extraWatchUrls,
+  ])];
+  const allowedDigests = new Set(
+    [...environmentByAgent.values()].map((metadata) => metadata.model.digest).filter((digest): digest is string => Boolean(digest)),
+  );
+  const watchId = (experimentId ?? `run-${Date.now()}`).replace(/[^A-Za-z0-9._-]/g, "-");
+  const watchPath = path.join(RESULTS_DIR, "daemon-watch", `${watchId}.jsonl`);
+  const watcher = await startDaemonWatcher(watchUrls, watchPath);
+
   const sequenceByAgent = new Map<string, number>();
   const results: TaskResult[] = [];
+  try {
   for (const round of plan) {
     console.log(
       `\n=== repetition ${round.repetition}/${options.repeat} — run ${round.runId ?? "default"} — arm order ${round.armOrder.join(" → ")} ===`,
@@ -1084,11 +1107,44 @@ async function main() {
           cacheState: sequenceInArm === 1 ? "cold" : "warm",
           environment: environmentByAgent.get(agent)!,
         };
-        const result = await runTask(agent, path.join(TASKS_DIR, t), keep, runMetadata);
+        let result: TaskResult;
+        let environmentRetries = 0;
+        for (;;) {
+          runMetadata.environmentRetries = environmentRetries || undefined;
+          result = await runTask(agent, path.join(TASKS_DIR, t), keep, runMetadata);
+          const boundaryEntries: WatchEntry[] = [runMetadata.runners?.before, runMetadata.runners?.after]
+            .filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== undefined)
+            .map((snapshot) => ({ url: harnessArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl, ...snapshot }));
+          const startMs = Date.parse(runMetadata.startedAt ?? "");
+          const endMs = Date.parse(runMetadata.endedAt ?? "");
+          const allEntries = [...watcher.entries, ...boundaryEntries];
+          const foreign = allowedDigests.size === 0 ? [] : [
+            ...foreignEntriesForInterval(
+              allEntries.filter((entry) => evaluationUrls.includes(entry.url)), startMs, endMs, allowedDigests,
+            ),
+            ...foreignEntriesForInterval(
+              allEntries.filter((entry) => !evaluationUrls.includes(entry.url)), startMs, endMs, new Set(),
+            ),
+          ];
+          if (foreign.length === 0) break;
+          environmentRetries++;
+          const archiveDir = path.join(RESULTS_DIR, "envfail");
+          fs.mkdirSync(archiveDir, { recursive: true });
+          const stem = `${agent}-${t}.${safeRunId(round.runId) || "default"}.attempt${environmentRetries}.envfail`;
+          fs.writeFileSync(path.join(archiveDir, `${stem}.json`), JSON.stringify({ result, foreign }, null, 2));
+          const liveLog = path.join(RESULTS_DIR, `${agent}-${t}${safeRunId(round.runId) ? `.${safeRunId(round.runId)}` : ""}.log`);
+          if (fs.existsSync(liveLog)) fs.copyFileSync(liveLog, path.join(archiveDir, `${stem}.log`));
+          console.warn(`ENVFAIL ${agent}/${t}: foreign runner detected; archived ${stem}.json`);
+          if (environmentRetries > 3) throw new Error(`environment interference persisted after 3 reruns for ${agent}/${t}`);
+        }
         results.push(result);
         writeSummary(agent, [result], round.runId);
       }
     }
+  }
+
+  } finally {
+    await watcher.stop();
   }
 
   console.log("\n=== summary ===");

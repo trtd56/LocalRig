@@ -12,6 +12,8 @@ export interface Config {
   /** Ollama prompt batch size; undefined keeps the server/model default. */
   numBatch?: number;
   numPredict: number;
+  /** Optional thinking override by task kind. Empty means no behavior change. */
+  thinkByKind: Record<string, boolean>;
   temperature: number;
   topP: number;
   topK: number;
@@ -114,6 +116,25 @@ export function applyProfile(config: Config, model: string, explicit: ReadonlySe
   }
 }
 
+export function parseThinkByKind(value: string | undefined): Record<string, boolean> {
+  if (value === undefined || value.trim() === "") return {};
+  const result: Record<string, boolean> = {};
+  for (const rawEntry of value.split(",")) {
+    const entry = rawEntry.trim();
+    const separator = entry.indexOf(":");
+    if (separator <= 0 || separator === entry.length - 1) {
+      throw new Error(`invalid LH_THINK_BY_KIND entry: ${entry || "(empty)"}`);
+    }
+    const kind = entry.slice(0, separator).trim();
+    const setting = entry.slice(separator + 1).trim().toLowerCase();
+    if (!kind || (setting !== "on" && setting !== "off")) {
+      throw new Error(`invalid LH_THINK_BY_KIND entry: ${entry}`);
+    }
+    result[kind] = setting === "on";
+  }
+  return result;
+}
+
 const resolvedModel = process.env.LH_MODEL ?? "qwen36-27b-mtp:latest";
 const profile = resolveProfile(resolvedModel);
 
@@ -123,7 +144,8 @@ export const defaultConfig: Config = {
   keepAlive: process.env.LH_KEEP_ALIVE ?? "30m",
   numCtx: Number(process.env.LH_NUM_CTX ?? 32768),
   numBatch: process.env.LH_NUM_BATCH === undefined ? undefined : Number(process.env.LH_NUM_BATCH),
-  numPredict: 16384,
+  numPredict: Number(process.env.LH_NUM_PREDICT ?? 16384),
+  thinkByKind: parseThinkByKind(process.env.LH_THINK_BY_KIND),
   temperature: Number(process.env.LH_TEMPERATURE ?? profile.temperature),
   topP: Number(process.env.LH_TOP_P ?? profile.topP),
   topK: Number(process.env.LH_TOP_K ?? profile.topK),

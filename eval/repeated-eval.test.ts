@@ -191,6 +191,19 @@ describe("repeated statistics and CI gate", () => {
     expect(gate.checks[0]!.message).toContain("missing tasks: b");
   });
 
+  test("can skip unavailable upper-level cost for harness-vs-harness gates", () => {
+    const sample = (task: string, agent: string) => ({
+      task, agent, passed: true, durationSec: 1,
+      run: { experimentId: "h", runId: "h", repetition: 1, repeat: 1, cacheState: "warm" as const },
+    });
+    const comparison = compareRepeatedArms("old", [sample("a", "old")], "new", [sample("a", "new")]);
+    const gate = evaluateGate(comparison, {
+      maxQualityDrop: 0, minUpperCostSavingsUsd: 0, maxP95WallSec: 10, skipCost: true,
+    });
+    expect(gate.passed).toBe(true);
+    expect(gate.checks.find((check) => check.name === "positive_upper_cost_savings")).toMatchObject({ passed: true });
+  });
+
   test("fails closed when planned repetitions or paired metadata are missing", () => {
     const sample = (agent: string, runId: string, orderSeed: string) => ({
       task: "a", agent, passed: true, durationSec: 1, costUsd: agent === "base" ? 2 : 1,

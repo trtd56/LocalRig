@@ -14,6 +14,8 @@
     "eval": "bun run eval/run.ts",
     "eval:analyze": "bun run eval/analyze-repeated.ts",
     "eval:gate": "bun run eval/gate.ts",
+    "eval:daemon": "bun run eval/daemon.ts",
+    "eval:watch-daemon": "bun run eval/watch-daemon.ts",
     "eval:diff-adapter": "bun run eval/check-diff-adapter.ts",
     "eval:research-adapter": "bun run eval/check-research-adapter.ts"
   },

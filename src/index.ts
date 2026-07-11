@@ -33,7 +33,7 @@ import {
 import { preprocessDiff } from "./diff.ts";
 import { toPreprocessResult } from "./preprocess.ts";
 import { estimateTokens } from "./context/tokens.ts";
-import { OllamaClient } from "./provider/ollama.ts";
+import { fetchRunnerSnapshot, OllamaClient, type RunnerSnapshot } from "./provider/ollama.ts";
 import {
   createBraveSearch,
   createSearxngSearch,
@@ -153,6 +153,9 @@ One-shot flags:
   --max-iterations N        agent loop cap (default: ${defaultConfig.maxIterations})
   --max-time SECONDS        wall-clock budget; 0 disables (default: ${defaultConfig.maxTimeMs / 1000})
   --think-budget CHARS      abort a turn if thinking exceeds this before output (default: ${defaultConfig.thinkBudgetChars})
+  --think / --no-think      explicitly enable/disable model thinking; omitted
+                            preserves the model default (LH_THINK_BY_KIND may
+                            provide an opt-in override for --kind)
   --headroom TOKENS         tokens reserved above usage for the next reply (default: ${defaultConfig.headroomTokens})
   --check COMMAND           run an acceptance command after the agent finishes;
                             failed checks are fed back to the agent for repair
@@ -541,6 +544,13 @@ export function parseArgs(argv: string[]): CliOptions {
   return opts;
 }
 
+/** Resolve a command-level thinking override without changing the model default. */
+export function resolveThink(opts: Pick<CliOptions, "distillThink" | "noThink" | "kind" | "config">, kind = opts.kind): boolean | undefined {
+  if (opts.distillThink) return true;
+  if (opts.noThink) return false;
+  return kind === undefined ? undefined : opts.config.thinkByKind[kind];
+}
+
 async function readStdin(signal?: AbortSignal): Promise<string> {
   return (await readStdinRaw(signal)).trim();
 }
@@ -912,6 +922,9 @@ function batchForJson(record: SessionRecord) {
     dimensions: record.dimensions,
     cwd: record.cwd,
     isolation: record.isolation,
+    think: record.think,
+    system_prompt_sha256: record.system_prompt_sha256,
+    runners: record.runners,
     tasks: (record.tasks ?? []).map(taskForJson),
     model_turns: record.modelTurns,
     tokens: record.tokens,
@@ -937,6 +950,9 @@ function sessionForJson(record: SessionRecord) {
     cwd: record.cwd,
     isolation: record.isolation,
     kind: record.kind,
+    think: record.think,
+    system_prompt_sha256: record.system_prompt_sha256,
+    runners: record.runners,
     resumed_from: record.resumedFrom,
     pid: record.pid,
     check: record.check,
@@ -1008,6 +1024,7 @@ function rewriteRestoredIsolationPaths(messages: ChatMessage[], from: string, to
 
 async function runOneShot(opts: CliOptions): Promise<never> {
   const { config } = opts;
+  const runnerStart = await fetchRunnerSnapshot(config.ollamaUrl);
   const dimensions = executionDimensions(opts);
   const started = Date.now();
   const originalMaxTimeMs = config.maxTimeMs;
@@ -1198,7 +1215,8 @@ async function runOneShot(opts: CliOptions): Promise<never> {
       inputStopped = true;
     }
   }
-  const agent = new Agent(config, cwd, onEvent, denyPermission, undefined, undefined, undefined, scope, deadline);
+  const effectiveThink = resolveThink(opts);
+  const agent = new Agent(config, cwd, onEvent, denyPermission, undefined, undefined, effectiveThink, scope, deadline);
   if (restored) agent.restore(restored);
 
   let result = "";
@@ -1357,6 +1375,7 @@ async function runOneShot(opts: CliOptions): Promise<never> {
   process.off("SIGINT", onSigint);
   deadline.dispose();
   const durationMs = Date.now() - started;
+  const runnerEnd = await fetchRunnerSnapshot(config.ollamaUrl);
 
   const record: SessionRecord = {
     id: sessionId,
@@ -1366,6 +1385,9 @@ async function runOneShot(opts: CliOptions): Promise<never> {
     dimensions,
     prompt: opts.prompt ?? "",
     kind: opts.kind,
+    think: effectiveThink,
+    system_prompt_sha256: createHash("sha256").update(agent.getMessages()[0]?.content ?? "").digest("hex"),
+    runners: { start: runnerStart, end: runnerEnd },
     status,
     result,
     error,
@@ -1497,6 +1519,9 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   const json = opts.json;
   const dimensions = executionDimensions(opts);
   const now = deps?.now ?? Date.now;
+  let runnerStart: RunnerSnapshot | undefined;
+  let runnerEnd: RunnerSnapshot | undefined;
+  if (deps === undefined) runnerStart = await fetchRunnerSnapshot(opts.config.ollamaUrl);
   const started = now();
 
   // Batch is synchronous and self-contained: no detached/resume variants (v1).
@@ -1629,7 +1654,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
   // check runner, and the system clock. Tests inject fakes via `deps`.
   const d: BatchDeps = deps ?? {
     now,
-    createAgent: (sp, task, scope) => new Agent(config, cwd, onEvent, denyPermission, sp, undefined, task.think, scope, deadline),
+    createAgent: (sp, task, scope) => new Agent(config, cwd, onEvent, denyPermission, sp, undefined, task.think ?? resolveThink(opts, task.kind), scope, deadline),
     applyBudget: (ms) => {
       config.maxTimeMs = ms;
     },
@@ -1783,6 +1808,9 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
       model: config.model,
       dimensions,
       prompt: `batch: ${tasks.map((t) => t.id).join(", ")}`,
+      think: resolveThink(opts),
+      system_prompt_sha256: createHash("sha256").update(systemPrompt).digest("hex"),
+      runners: runnerStart || runnerEnd ? { start: runnerStart, end: runnerEnd } : undefined,
       status,
       result: summarizeTasks(execs),
       error: errored?.error,
@@ -1942,6 +1970,7 @@ export async function cmdBatch(argv: string[], deps?: BatchDeps): Promise<number
         }
       }
     }
+    if (deps === undefined) runnerEnd = await fetchRunnerSnapshot(config.ollamaUrl);
     const record = buildRecord(finalStatus, executions);
     if (isolationError) {
       record.error = isolationError;
@@ -3303,6 +3332,8 @@ function buildDetachedArgs(opts: CliOptions, sessionId: string, cwd: string): st
   for (const protectedPath of opts.protectedPaths) args.push("--protect-path", protectedPath);
   if (opts.checkCommand) args.push("--check", opts.checkCommand, "--check-retries", String(opts.checkRetries));
   if (opts.kind) args.push("--kind", opts.kind);
+  if (opts.distillThink) args.push("--think");
+  if (opts.noThink) args.push("--no-think");
   if (opts.caller) args.push("--caller", opts.caller);
   if (opts.hardware) args.push("--hardware", opts.hardware);
   if (opts.integrationVersion) args.push("--integration-version", opts.integrationVersion);
@@ -3332,7 +3363,7 @@ async function runRepl(opts: CliOptions): Promise<void> {
     return answer === "y";
   };
 
-  const agent = new Agent(config, cwd, render, askPermission);
+  const agent = new Agent(config, cwd, render, askPermission, undefined, undefined, resolveThink(opts));
 
   process.on("SIGINT", () => {
     agent.interrupt();

@@ -213,6 +213,7 @@ export type AgentEvent =
       type: "timing";
       phase: "model" | "tool";
       durationMs: number;
+      totalMs?: number;
       ttftMs?: number;
       loadMs?: number;
       promptEvalMs?: number;

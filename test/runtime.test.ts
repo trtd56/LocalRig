@@ -519,7 +519,9 @@ describe("CLI timeout status", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "lh-cli-timeout-"));
     const server = Bun.serve({
       port: 0,
-      fetch: () => new Response(new ReadableStream({ start() {} })),
+      fetch: (request) => new URL(request.url).pathname === "/api/ps"
+        ? Response.json({ models: [] })
+        : new Response(new ReadableStream({ start() {} })),
     });
     try {
       const proc = Bun.spawn([

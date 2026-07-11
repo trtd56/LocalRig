@@ -151,6 +151,8 @@ research adapterはライブWebと実モデルから切り離した固定fixture
 - **presencePenalty**: Qwen のループ対策として実測で決定(`src/config.ts` のコメント参照)。
 - **thinkBudgetChars**: 文字ベースの thinking watchdog。thinking の冗長度はモデル依存。
 - **think パラメータの扱い**: `src/provider/ollama.ts` は `think` オプションを未指定なら送らずモデルのデフォルトに委ねる。新モデルが thinking 非対応、または別形式で thinking を返す可能性がある。
+- **opt-in thinking 解決**: one-shot/REPL/batchは明示`--think`/`--no-think`、task manifestの`think`、`LH_THINK_BY_KIND="docs:off"`を優先順位付きで解決する。map既定は空で、品質ゲート前に既定挙動を変えない。
+- **干渉の可観測性**: providerの`total_duration`からqueue残差とclient overheadを加算保存する。command/task境界の`/api/ps` snapshotとeval中の30秒watcherで外来digest sampleを品質・速度判定から除外する。
 - **loopWarnAfter / loopAbortAfter**: 反復傾向はモデル依存。
 - **システムプロンプト**: `src/prompt/system.ts` は ~27B 向けに短く命令調で書かれている。モデルの規模・性格に応じて調整の余地がある。
 - **ツールコール形式**: `src/toolcall/fallback.ts` は Qwen の `<tool_call>{...}</tool_call>` ブロック → fenced ```json ブロック → bare JSON という優先順位でテキストからツールコールを復元する。新モデルが生成するツールコール崩れの形式が異なる場合、eval ログから生出力を採取して `test/toolcall.test.ts` にフィクスチャを追加し、必要ならパーサ段を1つ足す。eval ログの「⚠ tool-call repair」出現率がモデル比較の指標になる。

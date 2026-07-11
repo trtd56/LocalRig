@@ -417,6 +417,7 @@ export class Agent {
         type: "timing",
         phase: "model",
         durationMs: Date.now() - started,
+        totalMs: response?.timings?.totalMs,
         ttftMs: firstTokenAt === undefined ? undefined : firstTokenAt - started,
         loadMs: response?.timings?.loadMs,
         promptEvalMs: response?.timings?.promptEvalMs,

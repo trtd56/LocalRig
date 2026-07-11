@@ -124,6 +124,7 @@ describe("Agent.runTextOnly", () => {
       expect(events.find((event) => event.type === "timing")).toMatchObject({
         type: "timing",
         phase: "model",
+        totalMs: 20,
         loadMs: 1,
         promptEvalMs: 5,
         evalMs: 12,

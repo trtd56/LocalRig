@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 import type { ChatMessage, ErrorKind, RunReport, RunStatus } from "./types.ts";
 import type { IsolationSessionMetadata } from "./isolation/types.ts";
 import type { ModelTurnMetric } from "./metrics.ts";
+import type { RunnerSnapshot } from "./provider/ollama.ts";
 
 export const SESSION_SCHEMA_VERSION = 2;
 export const FEEDBACK_SCHEMA_VERSION = 2;
@@ -226,6 +227,10 @@ export interface SessionRecord {
   model: string;
   prompt: string;
   kind?: string;
+  /** Effective command-level thinking override; omitted preserves model default. */
+  think?: boolean;
+  system_prompt_sha256?: string;
+  runners?: { start?: RunnerSnapshot; end?: RunnerSnapshot };
   status: RunStatus | BatchStatus;
   result: string;
   error?: string;
@@ -341,6 +346,9 @@ function normalizeModelTurns(value: unknown): ModelTurnMetric[] | undefined {
       turn,
       task_id: typeof item.task_id === "string" && item.task_id ? item.task_id : undefined,
       duration_ms: duration,
+      total_duration_ms: optional(item, "total_duration_ms"),
+      queue_residual_ms: optional(item, "queue_residual_ms"),
+      client_overhead_ms: optional(item, "client_overhead_ms"),
       ttft_ms: optional(item, "ttft_ms"),
       load_ms: optional(item, "load_ms"),
       prompt_eval_ms: optional(item, "prompt_eval_ms"),
@@ -490,6 +498,10 @@ function normalizeSession(rawValue: unknown, expectedId?: string): SessionRecord
     durations: normalizeDurations(rawValue.durations, durationMs),
     tokens: normalizeTokens(rawValue.tokens),
     modelTurns: normalizeModelTurns(rawValue.modelTurns),
+    think: typeof rawValue.think === "boolean" ? rawValue.think : undefined,
+    system_prompt_sha256: typeof rawValue.system_prompt_sha256 === "string" && /^[0-9a-f]{64}$/.test(rawValue.system_prompt_sha256)
+      ? rawValue.system_prompt_sha256
+      : undefined,
     dimensions: {
       ...(isRecord(rawValue.dimensions) ? rawValue.dimensions : {}),
       model: typeof rawValue.model === "string" ? rawValue.model : undefined,

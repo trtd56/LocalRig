@@ -840,6 +840,7 @@ describe("one-shot isolation integration", () => {
     const server = Bun.serve({
       port: 0,
       fetch: async (request) => {
+        if (new URL(request.url).pathname === "/api/ps") return Response.json({ models: [] });
         const body = await request.json() as { messages?: Array<{ role?: string }> };
         const last = body.messages?.at(-1)?.role;
         const message = last === "tool"
@@ -918,6 +919,7 @@ describe("one-shot isolation integration", () => {
     const server = Bun.serve({
       port: 0,
       fetch: async (request) => {
+        if (new URL(request.url).pathname === "/api/ps") return Response.json({ models: [] });
         const body = await request.json() as { messages?: Array<{ role?: string; content?: string }> };
         requestBodies.push(JSON.stringify(body));
         const last = body.messages?.at(-1)?.role;

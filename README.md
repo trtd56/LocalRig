@@ -71,7 +71,8 @@ lh research -q "この2資料の相違点は?" https://example.com/a https://exa
 | `--cwd DIR` | 実行ディレクトリ指定 |
 | `--model NAME` | モデル上書き(env: `LH_MODEL`) |
 | `--num-ctx N` | コンテキスト窓(env: `LH_NUM_CTX`、既定 32768。VRAM に余裕があれば `LH_NUM_CTX=65536` 推奨) |
-| `--num-predict N` | 1ターンあたりの最大生成トークン(既定 16384) |
+| `--num-predict N` | 1ターンあたりの最大生成トークン(env: `LH_NUM_PREDICT`、既定 16384) |
+| `--think` / `--no-think` | one-shot/REPLを含むmodel thinkingの明示override。省略時はモデル既定を維持 |
 | `--temperature T` | 既定 0.6(Qwen3.6 thinking 推奨値) |
 | `--presence-penalty P` | 反復抑制ペナルティ(env: `LH_PRESENCE_PENALTY`、既定 1.0。Qwen 公式の反復対策レバー) |
 | `--max-iterations N` | エージェントループ上限(既定 60) |
