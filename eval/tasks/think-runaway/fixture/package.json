@@ -1,0 +1,5 @@
+{
+  "name": "think-runaway-fixture",
+  "private": true,
+  "scripts": { "test": "bun test" }
+}

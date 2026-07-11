@@ -138,6 +138,48 @@ describe("Agent.runTextOnly", () => {
   });
 });
 
+describe("thinking watchdog integration", () => {
+  test("aborts twice, injects nudges, then retries with think:false", async () => {
+    const originalFetch = globalThis.fetch;
+    const bodies: Array<Record<string, unknown>> = [];
+    let attempt = 0;
+    globalThis.fetch = (async (_input: string | URL | Request, init?: RequestInit) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      attempt++;
+      if (attempt <= 2) {
+        const signal = init?.signal!;
+        return new Response(new ReadableStream({
+          start(controller) {
+            signal.addEventListener("abort", () => controller.error(signal.reason ?? new Error("aborted")), { once: true });
+            controller.enqueue(new TextEncoder().encode(JSON.stringify({
+              message: { role: "assistant", thinking: "t".repeat(11) }, done: false,
+            }) + "\n"));
+          },
+        }));
+      }
+      return new Response(JSON.stringify({
+        message: { role: "assistant", content: "done" }, done: true,
+        prompt_eval_count: 10, eval_count: 1,
+      }) + "\n");
+    }) as typeof fetch;
+    const events: AgentEvent[] = [];
+    try {
+      const agent = new Agent(
+        { ...defaultConfig, thinkBudgetChars: 10 }, os.tmpdir(),
+        (event) => events.push(event), async () => false, "SYS", [], true,
+      );
+      expect(await agent.run("finish")).toBe("done");
+      expect(bodies.map((body) => body.think)).toEqual([true, true, false]);
+      expect(events.filter((event) => event.type === "thinking_interrupt")).toHaveLength(2);
+      expect(events.filter((event) => event.type === "timing" && event.interrupted)).toHaveLength(2);
+      const nudges = agent.getMessages().filter((message) => message.role === "user" && message.content.includes("reasoning was interrupted"));
+      expect(nudges).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("buildScoutSystemPrompt", () => {
   test("describes read-only exploration and digest JSON requirements", () => {
     const prompt = buildScoutSystemPrompt(os.tmpdir(), { ...defaultConfig }, "where is retry?", ["src"]);

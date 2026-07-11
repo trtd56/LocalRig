@@ -1,0 +1,9 @@
+{
+  "name": "think-runaway",
+  "prompt": "ISSUE.md の障害報告を読み、まず bun test で再現してください。報告には並行実行とタイマー精度が疑われていますが、推測だけで大規模に書き換えず、失敗を最小ケースまで絞って src/token-bucket.ts の根本原因だけを修正してください。テストファイルと ISSUE.md は変更禁止です。修正後に bun test を実行してください。",
+  "verify": "bun test",
+  "checks": [
+    "src/token-bucket.ts must be modified",
+    "test/token-bucket.test.ts and ISSUE.md must NOT be modified"
+  ]
+}
