@@ -559,3 +559,11 @@ thinkingはone-shot/REPL/detached workerまで`--think`/`--no-think`が伝播し
 P0の初回試行（公式MTP、専用11500、`perf-fix` n=3）は3/3 PASS、259/255/198秒、max/min=1.308だった。専用daemon内のqueue residualは概ね数十ms（最大約1.39秒）で、従来の5倍分散は再現しなかった。ただし、この試行の自動watcherは評価接続先11500だけを監視しており、同時刻に共有11434で旧Qwen runnerが動いていた。したがって数値は**参考値でありP0合格証拠には採用しない**。自動watcherへ`LH_EVAL_WATCH_URLS`の複数daemon監視を追加し、評価接続先はarm digest allowlist、追加監視先はrunner 0体のみをcleanとするURL別判定へ修正した。
 
 16:55 JST時点でも共有11434の旧Qwenは実リクエストによりexpires_atが延長され続け、ユーザーworkloadを止めずにclean sampleを採取できなかった。計画のgo/no-go規則に従い、正式P0とP1以降はここで停止する。再開条件は共有daemonの`/api/ps`がP0 sample全区間で空、または物理的に別GPUへ分離できること。共有workloadを停止・unloadする操作は行っていない。
+
+#### 正式P0再走（2026-07-12）— go/no-go FAIL
+
+共有11434の全Ollama workload停止後、公式MTPを専用11500（Ollama 0.30.6、parallel/max-loaded各1）で`perf-fix` n=3再走した。`LH_EVAL_WATCH_URLS=http://127.0.0.1:11434`を併用し、全sampleで共有daemonはrunner 0、専用daemonはdigest `21c6dd8f67de`だけだった。結果は3/3 PASS、117 / 792 / 113秒、**max/min=7.04**で、P0基準`<1.5`を大幅に超過したためFAIL。
+
+今回はGPU競合ではない。通常turnのqueue residualは概ね8〜15ms、遅いrunでも最大約0.57秒だった。2本目だけ、(1)絶対path誤指定、(2)「重複が2回目に出た順」を返す誤実装、(3)失敗テストの巨大diffによるcontext膨張、(4)prune後も23.9〜25.4k promptを2回再prefill（各約187〜190秒）が連鎖し、8 turns / 96,665 prompt tokens / 792秒となった。対して他2本は4 turns / 約17k prompt tokens / 113〜117秒。分散源は外来daemonではなく**モデルのtool/修復経路とMISS prefill増幅**と確定した。
+
+計画のgo/no-go規則に従い、P1（旧モデル対公式MTP）以降は実行しない。現行のtask-level n=3中央値を速度採否に使う前に、固定transcript/probeでprovider性能を分離するか、失敗出力の強い上限・check主導の修復経路など、エージェント経路分散を抑える測定設計が必要。
