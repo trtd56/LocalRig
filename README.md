@@ -7,16 +7,7 @@ Ollama 上のローカル LLM(既定: Qwen 3.6 27B MTP)を Claude Code 級のコ
 ## どんな役割分担か
 
 高性能な親エージェントが設計・レビュー・最終判断を担当し、Local LLMには探索・定型修正・テストなど、機械的で検証しやすい作業を委譲する。品質ゲートを維持したまま、親エージェントのAPIトークンを難しい判断に集中させる。
-
-<p align="center">
-  <img src="./assets/localrig-workflow.png" alt="親エージェント、Local LLM、検証の役割分担" width="720">
-</p>
-
 委譲の効果はタスクの性質に依存する。機械的・検証可能・結果の要約が短いタスクほど削減しやすく、曖昧な新機能や複雑な根本原因調査では、再調査のためにかえってコストが増えることがある。以下の数値は検証仮説であり、同一タスク・同一条件の実測値で更新する。
-
-<p align="center">
-  <img src="./assets/localrig-delegation-evaluation.png" alt="Local LLM委譲のタスク別コスト評価" width="720">
-</p>
 
 ## 必要環境
 
