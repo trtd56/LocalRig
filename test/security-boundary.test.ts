@@ -105,11 +105,36 @@ describe("bash sandbox", () => {
       AWS_ACCESS_KEY_ID: "do-not-leak",
       NODE_OPTIONS: "--require malicious.js",
     });
-    expect(env.PATH).toBe("/bin");
+    expect(env.PATH).toBe(`${path.join(root, "tmp", "bin")}:/bin`);
     expect(env.LANG).toBe("C");
     expect(env.SECRET_TOKEN).toBeUndefined();
     expect(env.AWS_ACCESS_KEY_ID).toBeUndefined();
     expect(env.NODE_OPTIONS).toBeUndefined();
+  });
+
+  test("sandboxed mktemp lands in the private temp dir instead of failing", async () => {
+    // macOS mktemp ignores $TMPDIR for directory-less invocations (it uses
+    // confstr(_CS_DARWIN_USER_TEMP_DIR)), which the profile denies — the shim
+    // rewrites those onto the sandbox scratch dir. A silent mktemp failure
+    // corrupts backup/restore scripts (observed: eval write-tests verify.sh).
+    if (process.platform !== "darwin") return;
+    const { ctx, tools } = toolsFor(undefined, "auto");
+    const bash = tools.get("bash")!;
+    const plain = await bash.execute({ command: 'f=$(mktemp) && echo "created:$f" && [ -f "$f" ] && echo exists' }, ctx);
+    expect(plain.ok).toBe(true);
+    expect(plain.output).toContain("created:");
+    expect(plain.output).toContain("lh-sandbox-");
+    expect(plain.output).toContain("exists");
+    const dir = await bash.execute({ command: 'd=$(mktemp -d) && [ -d "$d" ] && echo "dir:$d"' }, ctx);
+    expect(dir.ok).toBe(true);
+    expect(dir.output).toContain("lh-sandbox-");
+    const prefixed = await bash.execute({ command: 'p=$(mktemp -t probe) && echo "pre:$p"' }, ctx);
+    expect(prefixed.ok).toBe(true);
+    expect(prefixed.output).toMatch(/pre:.*probe\./);
+    // Explicit templates pass through untouched; cwd is writable so they work.
+    const explicit = await bash.execute({ command: 'e=$(mktemp ./explicit.XXXXXX) && echo "exp:$e" && [ -f "$e" ] && echo exp-exists' }, ctx);
+    expect(explicit.ok).toBe(true);
+    expect(explicit.output).toContain("exp-exists");
   });
 
   test("profile denies network and grants writes only to scope and private temp", () => {

@@ -32,6 +32,24 @@ const THINKING_INTERRUPT_NUDGE =
   "State your current best hypothesis in 1-2 sentences, then immediately verify it with a tool call " +
   "(e.g. run the relevant test or command).";
 
+const BAD_TOOL_CALL_NUDGE =
+  "[system] Your last tool call never executed: the server rejected its JSON arguments as malformed " +
+  "or truncated before they reached the harness. Re-issue the call with valid JSON. If you were " +
+  "writing a large file, split the content across several smaller write/edit calls.";
+
+/**
+ * Server-side tool-call parse failures (e.g. Ollama's "llama-server returned
+ * invalid tool call arguments for \"write\": unexpected end of JSON input",
+ * seen when a large write call runs into the num_predict cap mid-arguments).
+ * The request itself succeeded, so this is a retryable model mistake — not an
+ * infrastructure error.
+ */
+export function isMalformedToolCallError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!message.startsWith("Ollama error:")) return false;
+  return /invalid tool call|tool call arguments|error parsing tool/i.test(message);
+}
+
 /**
  * Decide whether to abort the current streaming turn mid-thinking. Thinking
  * always streams before any content/tool-call tokens, so once real output has
@@ -158,6 +176,7 @@ export class Agent {
       // second interruption in a turn does the same before retrying.
       let response: ChatResponse;
       let interruptions = 0;
+      let badToolCalls = 0;
       let think: boolean | undefined = wrapUp ? false : this.forceThink;
       for (;;) {
         const turn = await this.streamTurn(think, interruptions);
@@ -172,6 +191,15 @@ export class Agent {
         if (turn.kind === "response") {
           response = turn.response;
           break;
+        }
+        if (turn.kind === "bad_tool_call") {
+          // The server dropped the model's tool call (malformed/truncated
+          // JSON args). The turn produced no message, so nudge and retry;
+          // give up after two attempts to avoid burning the time budget.
+          badToolCalls++;
+          if (badToolCalls > 2) throw turn.error;
+          this.push({ role: "user", content: BAD_TOOL_CALL_NUDGE });
+          continue;
         }
         // Watchdog interrupted mid-thinking: record the nudge as a normal
         // message and retry. First retry keeps thinking; second turns it off.
@@ -320,6 +348,9 @@ export class Agent {
       this.lastRunStatus = "error";
       return "[thinking interrupted]";
     }
+    // Unreachable in practice: this turn runs with no tools, so the server
+    // cannot reject a tool call. Surface it as the original error if it happens.
+    if (turn.kind === "bad_tool_call") throw turn.error;
 
     const response = turn.response;
     this.onEvent({ type: "turn_end" });
@@ -349,6 +380,7 @@ export class Agent {
   ): Promise<
     | { kind: "response"; response: ChatResponse }
     | { kind: "interrupted" }
+    | { kind: "bad_tool_call"; error: unknown }
     | { kind: "user_abort" }
     | { kind: "timeout" }
   > {
@@ -410,6 +442,7 @@ export class Agent {
         return this.activeDeadline?.timedOut ? { kind: "timeout" } : { kind: "user_abort" };
       }
       if (interrupted) return { kind: "interrupted" };
+      if (isMalformedToolCallError(err)) return { kind: "bad_tool_call", error: err };
       throw err;
     } finally {
       userSignal.removeEventListener("abort", onUserAbort);

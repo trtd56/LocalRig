@@ -76,8 +76,20 @@ const GEMMA_PROFILE: ModelProfile = {
   thinkBudgetChars: 6000,
 };
 
+// InternScience Agents-A1 (35B qwen35moe). HF card recommends 0.85 / 0.95 / 20
+// with presence 1.1. It is Qwen-based, so it would otherwise match "qwen" and
+// inherit the wrong temperature — keep this entry ahead of the qwen pattern.
+const AGENTS_A1_PROFILE: ModelProfile = {
+  temperature: 0.85,
+  topP: 0.95,
+  topK: 20,
+  presencePenalty: 1.1,
+  thinkBudgetChars: 6000,
+};
+
 // Model name (case-insensitive substring) → profile. First match wins.
 const MODEL_PROFILES: { pattern: string; profile: ModelProfile }[] = [
+  { pattern: "agents-a1", profile: AGENTS_A1_PROFILE },
   { pattern: "qwen", profile: QWEN_PROFILE },
   { pattern: "gemma", profile: GEMMA_PROFILE },
 ];

@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import * as os from "node:os";
-import { Agent, shouldInterruptThinking } from "../src/agent.ts";
+import { Agent, isMalformedToolCallError, shouldInterruptThinking } from "../src/agent.ts";
 import { defaultConfig } from "../src/config.ts";
 import { buildScoutSystemPrompt } from "../src/prompt/system.ts";
 import type { AgentEvent, ChatMessage, ToolDef } from "../src/types.ts";
@@ -178,6 +178,51 @@ describe("thinking watchdog integration", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+});
+
+describe("malformed tool-call retry", () => {
+  const SERVER_ERROR = 'llama-server returned invalid tool call arguments for "write": unexpected end of JSON input';
+  const errorResponse = () =>
+    new Response(JSON.stringify({ error: SERVER_ERROR }) + "\n", { status: 200 });
+  const doneResponse = () =>
+    new Response(JSON.stringify({
+      message: { role: "assistant", content: "done" }, done: true,
+      prompt_eval_count: 10, eval_count: 1,
+    }) + "\n");
+
+  test("nudges and retries when the server rejects a tool call's JSON args", async () => {
+    const originalFetch = globalThis.fetch;
+    let attempt = 0;
+    globalThis.fetch = (async (_input: string | URL | Request) => (++attempt <= 2 ? errorResponse() : doneResponse())) as typeof fetch;
+    try {
+      const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SYS", [], true);
+      expect(await agent.run("write the tests")).toBe("done");
+      expect(attempt).toBe(3);
+      const nudges = agent.getMessages().filter(
+        (message) => message.role === "user" && message.content.includes("tool call never executed"),
+      );
+      expect(nudges).toHaveLength(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("gives up with the original error after two failed retries", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_input: string | URL | Request) => errorResponse()) as typeof fetch;
+    try {
+      const agent = new Agent({ ...defaultConfig }, os.tmpdir(), () => {}, async () => false, "SYS", [], true);
+      await expect(agent.run("write the tests")).rejects.toThrow(/invalid tool call arguments/);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("unrelated ollama errors are not classified as retryable", () => {
+    expect(isMalformedToolCallError(new Error(`Ollama error: ${SERVER_ERROR}`))).toBe(true);
+    expect(isMalformedToolCallError(new Error("Ollama error: model not found"))).toBe(false);
+    expect(isMalformedToolCallError(new Error("Ollama HTTP 500: boom"))).toBe(false);
   });
 });
 

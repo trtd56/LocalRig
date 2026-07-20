@@ -43,7 +43,7 @@ const TRUSTED_RUNTIME_NAMES = [
 /** Minimal environment exposed to an untrusted local-model shell. */
 export function sandboxEnvironment(cwd: string, tempDir: string, source: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {
-    PATH: source.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin",
+    PATH: `${sandboxShimDir(tempDir)}:${source.PATH ?? "/usr/bin:/bin:/usr/sbin:/sbin"}`,
     HOME: tempDir,
     TMPDIR: tempDir,
     PWD: cwd,
@@ -53,6 +53,56 @@ export function sandboxEnvironment(cwd: string, tempDir: string, source: NodeJS.
     if (source[key] !== undefined) env[key] = source[key];
   }
   return env;
+}
+
+function sandboxShimDir(tempDir: string): string {
+  return path.join(tempDir, "bin");
+}
+
+/**
+ * macOS /usr/bin/mktemp derives its default directory from
+ * confstr(_CS_DARWIN_USER_TEMP_DIR), NOT $TMPDIR, so directory-less
+ * invocations (`mktemp`, `mktemp -d`, `mktemp -t p`) try to create files in
+ * the real per-user temp dir, which the seatbelt profile denies. Scripts that
+ * rely on mktemp for backup/restore then corrupt the workspace silently.
+ * This PATH shim rewrites only those directory-less forms onto $TMPDIR (the
+ * sandbox-private scratch dir); explicit templates and unrecognized flags
+ * pass through to the real binary untouched.
+ */
+export const MKTEMP_SHIM = `#!/bin/sh
+REAL=/usr/bin/mktemp
+expect_prefix=0 rewrite=1
+for a in "$@"; do
+  if [ "$expect_prefix" = 1 ]; then
+    expect_prefix=0
+    case "$a" in */*|-*) rewrite=0 ;; esac
+    continue
+  fi
+  case "$a" in
+    -t) expect_prefix=1 ;;
+    -d|-q|-u) ;;
+    *) rewrite=0 ;;
+  esac
+done
+[ "$expect_prefix" = 0 ] || rewrite=0
+if [ "$rewrite" = 0 ]; then exec "$REAL" "$@"; fi
+prefix=tmp flags='' prev_t=0
+for a in "$@"; do
+  if [ "$prev_t" = 1 ]; then prefix="$a"; prev_t=0; continue; fi
+  case "$a" in
+    -t) prev_t=1 ;;
+    *) flags="$flags $a" ;;
+  esac
+done
+DIR="\${TMPDIR:-/tmp}"
+exec "$REAL" $flags "\${DIR%/}/\${prefix}.XXXXXXXXXX"
+`;
+
+/** Write the PATH shims into the per-call scratch dir (see MKTEMP_SHIM). */
+export function installSandboxShims(tempDir: string): void {
+  const shimDir = sandboxShimDir(tempDir);
+  fs.mkdirSync(shimDir, { recursive: true });
+  fs.writeFileSync(path.join(shimDir, "mktemp"), MKTEMP_SHIM, { mode: 0o755 });
 }
 
 function sbplString(value: string): string {
@@ -185,6 +235,9 @@ export function buildMacSandboxProfile(scope: WorkspaceScope, tempDir: string, s
     "/private/etc/zshenv",
     "/private/etc/zprofile",
     "/private/etc/zlogin",
+    // /bin/sh consults this symlink to pick its implementation; denying it
+    // spams "Operation not permitted" on every #!/bin/sh script.
+    "/private/var/select/sh",
   ]);
   for (const target of [scope.cwd, tempDir, ...executables]) addAncestors(target, readLiterals);
   const allowedRead = `(require-any ${[
@@ -266,8 +319,12 @@ export async function runSandboxedShell(
   } catch (err) {
     return { denied: err instanceof Error ? err.message : String(err) };
   }
-  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-sandbox-"));
+  // realpath: os.tmpdir() returns /var/folders/… but seatbelt evaluates the
+  // resolved /private/var/… path, so an unresolved tempDir never matches the
+  // profile's subpath filters and every read/write/exec under it is denied.
+  const tempDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "lh-sandbox-")));
   try {
+    installSandboxShims(tempDir);
     const profile = buildMacSandboxProfile(scope, tempDir);
     const env = sandboxEnvironment(cwd, tempDir);
     let auditImmediatelyBeforeSpawn: string;

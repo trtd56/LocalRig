@@ -567,3 +567,68 @@ P0の初回試行（公式MTP、専用11500、`perf-fix` n=3）は3/3 PASS、259
 今回はGPU競合ではない。通常turnのqueue residualは概ね8〜15ms、遅いrunでも最大約0.57秒だった。2本目だけ、(1)絶対path誤指定、(2)「重複が2回目に出た順」を返す誤実装、(3)失敗テストの巨大diffによるcontext膨張、(4)prune後も23.9〜25.4k promptを2回再prefill（各約187〜190秒）が連鎖し、8 turns / 96,665 prompt tokens / 792秒となった。対して他2本は4 turns / 約17k prompt tokens / 113〜117秒。分散源は外来daemonではなく**モデルのtool/修復経路とMISS prefill増幅**と確定した。
 
 計画のgo/no-go規則に従い、P1（旧モデル対公式MTP）以降は実行しない。現行のtask-level n=3中央値を速度採否に使う前に、固定transcript/probeでprovider性能を分離するか、失敗出力の強い上限・check主導の修復経路など、エージェント経路分散を抑える測定設計が必要。
+
+## Agents-A1 比較ラウンド: InternScience Agents-A1 35B vs 現行MTP (2026-07-20)
+
+InternScience の [Agents-A1コレクション](https://huggingface.co/collections/InternScience/agents-a1) の **Agents-A1 35B Q4_K_M GGUF** を、現行デフォルトのローカルモデル `qwen36-27b-mtp` とハーネス上で直接比較した。Agents-A1 は "Scaling the Horizon, Not the Parameters" を掲げる long-horizon エージェント特化モデルで、実体は `qwen35moe`（総34.7B、MoE）。Ollama 0.30.6 が追加設定なしでロードでき、`ollama show` は `tools` / `thinking` capability を報告した（Modelfile自作フォールバックは不要）。262kコンテキスト、Apache 2.0。
+
+計測条件は両アーム共通: 専用daemon（port 11500、parallel/max-loaded各1）、M3 Max / 64GB、同一seed（20260720）でタスクごとに `harness-mtp → harness-a1` を交互実行。サンプリングはHFカード推奨に合わせて `AGENTS_A1_PROFILE`（temp 0.85 / top_p 0.95 / top_k 20 / presence 1.1）を `src/config.ts` に追加した（Qwen派生のため `agents-a1` パターンを `qwen` より前に置き、誤マッチを防止）。
+
+### 速度パス（代表4タスク × n=3、`--run-id a1-speed`）
+
+`eval:analyze --baseline harness-mtp --candidate harness-a1` の結果:
+
+| metric | qwen36-27b-mtp | Agents-A1 35B |
+|---|---:|---:|
+| quality success | 12/12 (100%) | 12/12 (100%) |
+| wall median / p90 / p95 | 221 / 296 / 313s | 65.5 / 101 / 111s |
+| decode tok/s median | 10.4 | 57.0 |
+| prefill tok/s median | 580 | 2,618 |
+| turns median | 8 | 8 |
+| completion tokens/task median | 1,609 | 1,686 |
+
+品質差 0.00%、wall中央値で **3.4×高速**。ターン数・生成トークン数はほぼ同等なので、少ない仕事量で速いのではなく**トークンあたりのスループットが速い** = MoEの活性パラメータが少ない効果。MTPの decode 10.4 tok/s は本レポート過去ラウンドの固定decode実測（9.89〜13.72 tok/s、L529・L535）と一致しており、外れ値ではない。
+
+### 品質パス（全ベースライン20タスク × n=1、`--run-id a1-quality`）
+
+| metric | qwen36-27b-mtp | Agents-A1 35B |
+|---|---:|---:|
+| 品質 | **20/20 PASS** | **19/20 PASS** |
+| 総wall-clock（20タスク） | 10,086s | 3,740s |
+| 全タスク中A1が高速 | — | 20/20 |
+| decode tok/s median | 9.1 | 54.0 |
+| prefill tok/s median | 588 | 3,087 |
+| turns median | 10 | 14 |
+
+Agents-A1 は全20タスクで高速、総wall-clockは **2.7×（−63%）**。decode 5.9×・prefill 5.2×。特筆すべきは A1 のターン数中央値が 14 と MTP の 10 より**多い**のに全体で2.7×速い点で、勝因が手数削減ではなく生の生成速度であることを裏づける。タスク別の高速化は 1.4×（test-triage）〜4.8×（async-race）に分布。
+
+MTP アーム側は committed baseline (`eval/baselines/qwen36-27b-mtp.json`) と同じ 20/20 PASS で、ハーネスの健全性を確認した（旧baseline比の所要時間・prompt token増は 2026-07-07 以降のctx・トークン計上・専用daemon条件の変更によるもので、両アーム同条件のため head-to-head には影響しない）。
+
+#### 唯一の品質差: `write-tests`（A1 FAIL）— 保護ソースの改変 + 不正確な自己申告
+
+`write-tests` は「`src/slug.ts` を**変更せず**、テストだけを `test/slug.test.ts` に書く。ミューテーションで4変異版すべてを殺す」タスク。`verify.sh` は src/slug.ts の sha256 を埋め込みで固定し、`src/` が eval runner の保護対象外であることをこのガードで補っている。
+
+ログの `changed_files` は `{src/slug.ts: modified, slug.ts: created(ルート直下), test/slug.test.ts: created}`。つまり A1 は禁止された **`src/slug.ts` を改変**し（加えてルートに不要な `slug.ts` を誤生成）、truncateWords が `words.length <= maxWords` の境界でも `…` を付けるよう壊した。その結果:
+
+1. `verify.sh` step2 の sha256 ガードが `FAIL: src/slug.ts was modified` を検出。
+2. A1 自身が書いたテストは**仕様どおり正しく**（`truncateWords("a b", 5)` → `"a b"` 省略記号なし、等）、壊れた実装に対して4件fail（`Expected "a b" / Received "a b…"`）。
+
+重要な点は2つ。**(a)** テスト作成そのものは適切で、失敗原因は「触るなと明示された src を改変した」制約違反であること。**(b)** それでいてモデルの最終報告は「`test/verify.sh` confirms all 14 tests pass ... The source file remains unchanged.」と**事実と逆の成功申告**をしていた（実際は verify FAIL・src改変済み）。`testFilesModified: []` だったのは、runner の tamper 検出が名前に `test` を含むファイルだけを見るためで、src/slug.ts はそこに掛からず verify.sh 側の sha256 ガードが捕捉した。long-horizon 実行速度は圧倒的な一方、境界の広いタスクで**制約遵守と自己検証の正確さ**に穴が出た形。
+
+**【訂正 2026-07-21】上記の解釈はログ精査で覆った。** src/slug.ts を mutant に書き換えたのは A1 自身の編集ではなく、**A1 が正攻法で実行した `bash test/verify.sh` 自体の mutation ループ**である。verify.sh は `backup="$(mktemp)"` でバックアップを取ってから mutant を swap し復元する設計だが、ハーネス sandbox のバグ（下記ラウンド）で `mktemp` が "Operation not permitted" で silent に失敗（`backup` が空文字）、mutant swap 後の復元 `cp "" src/slug.ts` がすべて失敗し、**最後の mutant (m4) が src/slug.ts に残留**した。cp の失敗は verify.sh の fail フラグに乗らないため、スクリプト自身が「ok: kills all 4 mutants, src/slug.ts intact」を出力しており、モデルの成功報告は**このスクリプト出力の忠実な引用**であって虚偽申告ではない。sha256 ガードも「A1 実行時は pristine で通過→runner の最終 verify 時のみ mismatch」という時系列。またログ上、A1 は当初の自分のテスト入力ミス（「ちょうど maxWords」のつもりで 4語/maxWords=2 を渡した）に bun test の失敗から自力で気づき、仕様どおりの期待値のまま入力側を直して 14/14 pass まで到達している。**モデル起因の品質差・制約違反・虚偽申告はいずれも無かった。**
+
+### ハーネス修正ラウンド: sandbox 2バグの修正と A1 20/20 PASS (2026-07-21)
+
+`write-tests` FAIL の根本原因調査で、ハーネスに2件のバグを発見・修正した。
+
+**バグ1: sandbox tempDir の symlink 不一致 + macOS mktemp の仕様（`src/tools/bash.ts`）。** `os.tmpdir()` は `/var/folders/…` を返すが、seatbelt は resolve 済みの `/private/var/…` で評価するため、プロファイルの tempDir 向け read/write/exec 許可は**一度もマッチしていなかった**（`mkdtempSync` 直後に `realpathSync` で解決）。さらに macOS の `/usr/bin/mktemp` はディレクトリ無指定時に `$TMPDIR` ではなく `confstr(_CS_DARWIN_USER_TEMP_DIR)`（= sandbox が書き込み拒否する実 T/）を使うため、環境変数だけでは直らない。sandbox 内 PATH 先頭に **mktemp シム**を注入し、ディレクトリ無指定形（bare / `-d` / `-t prefix`）のみ `$TMPDIR` 配下の明示テンプレートへ書き換える（明示テンプレート・未知フラグは実バイナリへ素通し）。あわせて `/private/var/select/sh` の read を許可し、`#!/bin/sh` スクリプトが毎回吐く "Operation not permitted" ノイズを除去。**seatbelt の書き込み許可範囲は拡大していない**（hard-link 監査の設計は不変）。
+
+**バグ2: サーバが弾いた不正ツールコールで即セッション中断（`src/agent.ts`）。** 修正後の write-tests n=3 再走（`--run-id a1-wt-fix`、2 PASS / 1 FAIL）で別の故障モードを検出: write ツールコールの生成が num_predict 上限（16k tokens、271秒）まで暴走して引数 JSON が途切れると、Ollama が `llama-server returned invalid tool call arguments: unexpected end of JSON input` を返し、ハーネスはこれを致命的 `ollama_error` として扱いテストファイル未作成のまま終了していた。thinking watchdog と同型の**リトライ可能なターン故障** `bad_tool_call` として扱い、「大きなファイルは分割して書け」という nudge 付きで最大2回再試行するよう変更（3回目は従来どおり元エラーを throw）。
+
+新規テスト: mktemp シム4ケース + bad_tool_call リトライ3ケース。全523テスト green、tsc クリーン。
+
+**修正後の A1 全20タスク再計測（`--run-id a1-quality2`、専用daemon 11500）: 20/20 PASS、総 wall-clock 2,765s**（初回 3,740s）。`write-tests` は初回 FAIL と同じ正攻法（`bash test/verify.sh`）を踏んだ上で mktemp 失敗ゼロ、「ok: kills all 4 mutants, src/slug.ts intact」までクリーンに完走。今回のランでは bad_tool_call リトライの発動は不要だった（保険として残る）。`eval/baselines/agents-a1-35b-q4km.json` は 20/20 の結果で更新済み。
+
+### 結論（更新）
+
+同一ハーネス・同一条件下で、**Agents-A1 35B Q4_K_M は現行 qwen36-27b-mtp に対し wall-clock 約2.7〜3.6×高速（decode 約5〜6×）、品質は全20タスクで同等（両者 20/20 PASS）**。初回計測の唯一の差分（write-tests）はハーネスの sandbox バグと確定し、モデル起因の品質差は確認されなかった。MoE により総パラメータは大きい（34.7B）が活性が少なく、Q4_K_M（22GB）でも 64GB 機に余裕で載る。ローカル委譲先の置き換え有力候補。残タスク: (1) 委譲アーム（claude-delegate）での実測、(2) デフォルト `LH_MODEL` 切り替えの判断、(3) write 系タスクでの num_predict 暴走頻度の継続観測。

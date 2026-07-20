@@ -154,6 +154,13 @@ describe("resolveProfile (model profiles)", () => {
     expect(profile).toEqual({ temperature: 1, topP: 0.95, topK: 64, presencePenalty: 0, thinkBudgetChars: 6000 });
   });
 
+  test("the Ollama HF pull name for Agents-A1 resolves the Agents-A1 profile", () => {
+    // Base is Qwen (qwen35moe), so this name also contains no literal 'qwen';
+    // the dedicated pattern must win and carry the HF-recommended sampling.
+    const profile = resolveProfile("hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M");
+    expect(profile).toEqual({ temperature: 0.85, topP: 0.95, topK: 20, presencePenalty: 1.1, thinkBudgetChars: 6000 });
+  });
+
   test("matching is case-insensitive", () => {
     expect(resolveProfile("Qwen3-32B-Instruct")).toEqual(resolveProfile("qwen3-32b-instruct"));
   });
