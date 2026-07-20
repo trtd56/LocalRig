@@ -5,8 +5,8 @@ LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証
 
 ## 前提
 
-- **harness 側**: Ollama が起動しており `qwen36-27b-mtp:latest` が pull 済みであること
-  (`curl -s http://localhost:11434/api/tags` で確認。`ollama show` は `:local` タグの解決に失敗するので `:latest` を使う)
+- **harness 側**: Ollama が起動しており既定モデル `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` が pull 済みであること
+  (`curl -s http://localhost:11434/api/tags` で確認。旧既定 `qwen36-27b-mtp:latest` と比較する場合はそちらも pull し、`LH_EVAL_HARNESS_ARMS` で別アームにする)
 - **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり。旧21タスク構成の実測で $3 前後)
 - `bun` (このリポジトリの標準ランタイム)。type-repair タスクの verify は `bunx tsc` を使う(初回のみネットワークからダウンロード)
 
@@ -103,7 +103,7 @@ bun run eval:gate -- --run-id speed-ci --baseline harness-old --candidate harnes
 
 ## モデル更新時の回帰手順
 
-ローカルモデル(現行 `qwen36-27b-mtp:latest`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。
+ローカルモデル(現行 `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M`、ベースライン `eval/baselines/agents-a1-35b-q4km.json`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。
 
 1. `LH_MODEL` を新モデル名にして全タスクを harness アームで実行する(`eval/results/summary-harness.json` が上書き更新される):
    ```sh

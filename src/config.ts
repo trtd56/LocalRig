@@ -147,7 +147,10 @@ export function parseThinkByKind(value: string | undefined): Record<string, bool
   return result;
 }
 
-const resolvedModel = process.env.LH_MODEL ?? "qwen36-27b-mtp:latest";
+// Default switched from qwen36-27b-mtp on 2026-07-21: Agents-A1 measured
+// 20/20 PASS on the eval suite at ~2.7-3.6x lower wall-clock (see
+// eval/REPORT.md "Agents-A1 比較ラウンド" and eval/baselines/agents-a1-35b-q4km.json).
+const resolvedModel = process.env.LH_MODEL ?? "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M";
 const profile = resolveProfile(resolvedModel);
 
 export const defaultConfig: Config = {

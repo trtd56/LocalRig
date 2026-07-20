@@ -1,6 +1,17 @@
-# qwen36-27b-mtp:latest について
+# ローカルモデルについて
 
-このハーネスが既定で使うローカルモデル `qwen36-27b-mtp:latest`（Ollama 上のカスタムビルド）の
+## 現行既定: hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M（2026-07-21〜）
+
+`ollama pull hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` でそのまま取得できる公式配布
+（arch `qwen35moe`, 34.7B MoE, Q4_K_M, 22GB, ctx 262144, capabilities: tools / thinking /
+completion / vision, Apache 2.0）。Modelfile の自作は不要で、サンプリングは `src/config.ts` の
+`AGENTS_A1_PROFILE`（temp 0.85 / top_p 0.95 / top_k 20 / presence 1.1、HF カード推奨値）が適用
+される。選定根拠と実測は eval/REPORT.md「Agents-A1 比較ラウンド」、回帰ベースラインは
+`eval/baselines/agents-a1-35b-q4km.json`（全20タスク PASS）。
+
+# qwen36-27b-mtp:latest について（旧既定）
+
+旧既定のローカルモデル `qwen36-27b-mtp:latest`（Ollama 上のカスタムビルド）の
 再現用資料。`qwen36-27b-mtp.Modelfile` は `ollama show --modelfile qwen36-27b-mtp:latest` の
 出力をそのまま保存したもの（無改変）。
 

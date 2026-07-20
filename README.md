@@ -12,7 +12,7 @@ Ollama 上のローカル LLM(既定: Qwen 3.6 27B MTP)を Claude Code 級のコ
 ## 必要環境
 
 - [Bun](https://bun.sh) ≥ 1.2(CLI/shebang・install・testに必須。packageのNode互換targetは≥24だが、Node単体起動は非対応)
-- [Ollama](https://ollama.com)(モデル: `qwen36-27b-mtp:latest` など tools 対応モデル)
+- [Ollama](https://ollama.com)(既定モデル: `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M`。`ollama pull hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` で取得。他の tools 対応モデルは `LH_MODEL` / `--model` で指定)
 
 ## インストール
 

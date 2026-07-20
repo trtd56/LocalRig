@@ -7,8 +7,11 @@ import { parseArgs, resolveThink } from "../src/index.ts";
 
 describe("defaultConfig", () => {
   test("new knobs have their documented defaults", () => {
+    // Default model is Agents-A1 (2026-07-21), so profile-backed knobs carry
+    // AGENTS_A1_PROFILE values unless LH_* env vars pin them.
+    expect(defaultConfig.model).toBe("hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M");
     expect(defaultConfig.thinkBudgetChars).toBe(6000);
-    expect(defaultConfig.presencePenalty).toBe(1.0);
+    expect(defaultConfig.presencePenalty).toBe(1.1);
     expect(defaultConfig.maxTimeMs).toBe(0);
     expect(defaultConfig.headroomTokens).toBe(4096);
     expect(defaultConfig.numPredict).toBe(16384);
