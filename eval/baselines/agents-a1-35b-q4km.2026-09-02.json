@@ -1,0 +1,1957 @@
+{
+  "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+  "capturedAt": "2026-09-02",
+  "note": "Agents-A1 35B Q4_K_M の同日再測定(--run-id a1-recheck、2026-09-02)。Ornith-1.5-35B-A3B 比較ラウンドの同日・同スタック対照として、7月baseline(agents-a1-35b-q4km.json)との環境ドリフトを切り分けるために取得。専用daemon(11500)・M3 Max 64GB・Ollama 0.32.15・n=1・AGENTS_A1_PROFILE(temp0.85/topP0.95/topK20/presence1.1)。結果 20/20 PASS・2,539s で、7月baseline(2,765s)比 −8.2%。ハーネスsrcは baseline 捕捉日以降変更なし。重要: タスク単位の自己再現比は 0.28x〜2.59x(async-race 348->902s / turns14->32、breaking-upgrade 639->177s / turns39->16)と大きく振れ、n=1 のタスク単位wall-clock比較が成立しないことを示す実測データでもある。thinking watchdog 中断は277回中24回(8.7%)、thinking 平均981字/回。",
+  "results": [
+    {
+      "task": "add-feature",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 4 pass\n 0 fail\n 6 expect() calls\nRan 4 tests across 1 file. [5.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 28,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 1,
+        "cacheState": "cold",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:10:59.265Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:10:59.265Z",
+            "models": []
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:11:27.441Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:41:27.431432+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:11:27.442Z"
+      },
+      "status": "ok",
+      "turns": 4,
+      "toolCalls": 4,
+      "promptTokens": 12472,
+      "completionTokens": 1056,
+      "prefillTps": 3606.331552336048,
+      "decodeTps": 71.18680881467964
+    },
+    {
+      "task": "api-migration",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 5 pass\n 0 fail\n 5 expect() calls\nRan 5 tests across 1 file. [5.00ms]\nok: migration complete\n",
+      "testFilesModified": [],
+      "durationSec": 79,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 2,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:11:27.459Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:11:27.459Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:41:27.431432+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:12:46.215Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:42:46.202987+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:12:46.216Z"
+      },
+      "status": "ok",
+      "turns": 18,
+      "toolCalls": 22,
+      "promptTokens": 95292,
+      "completionTokens": 3766,
+      "prefillTps": 4281.536885369276,
+      "decodeTps": 68.20257068999052
+    },
+    {
+      "task": "async-race",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 13 pass\n 0 fail\n 36 expect() calls\nRan 13 tests across 2 files. [13.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 902,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 3,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:12:46.255Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:12:46.255Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:42:46.202987+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:27:47.992Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:57:47.972193+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:27:47.992Z"
+      },
+      "status": "ok",
+      "turns": 32,
+      "toolCalls": 32,
+      "promptTokens": 396817,
+      "completionTokens": 14020,
+      "prefillTps": 6383.174801063956,
+      "decodeTps": 54.36365545986546
+    },
+    {
+      "task": "breaking-upgrade",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 16 pass\n 0 fail\n 22 expect() calls\nRan 16 tests across 5 files. [9.00ms]\nok: migration complete\n",
+      "testFilesModified": [],
+      "durationSec": 177,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 4,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:27:48.025Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:27:48.025Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T09:57:47.972193+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:30:45.446Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:00:45.422536+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:30:45.447Z"
+      },
+      "status": "ok",
+      "turns": 16,
+      "toolCalls": 21,
+      "promptTokens": 144141,
+      "completionTokens": 7717,
+      "prefillTps": 4454.6771577321715,
+      "decodeTps": 53.76061230446311
+    },
+    {
+      "task": "debug-runtime",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "ok: output matches\n",
+      "testFilesModified": [],
+      "durationSec": 45,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 5,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:30:45.544Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:30:45.544Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:00:45.422536+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:31:30.807Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:01:30.78723+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:31:30.808Z"
+      },
+      "status": "ok",
+      "turns": 10,
+      "toolCalls": 9,
+      "promptTokens": 34251,
+      "completionTokens": 2290,
+      "prefillTps": 7860.0732101414715,
+      "decodeTps": 57.300861677346354
+    },
+    {
+      "task": "doc-sync",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 6 pass\n 0 fail\n 9 expect() calls\nRan 6 tests across 1 file. [9.00ms]\nok: README.md matches src/cli.ts, source intact\n",
+      "testFilesModified": [],
+      "durationSec": 26,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 6,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:31:30.889Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:31:30.889Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:01:30.78723+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:31:57.037Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:01:57.017988+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:31:57.038Z"
+      },
+      "status": "ok",
+      "turns": 5,
+      "toolCalls": 5,
+      "promptTokens": 17575,
+      "completionTokens": 1280,
+      "prefillTps": 5092.543762553881,
+      "decodeTps": 57.33155730918456
+    },
+    {
+      "task": "explore-codebase",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "ok: Q1\nok: Q2\nok: Q3\n",
+      "testFilesModified": [],
+      "durationSec": 30,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 7,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:31:57.141Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:31:57.141Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:01:57.017988+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:32:26.767Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:02:26.746805+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:32:26.768Z"
+      },
+      "status": "ok",
+      "turns": 6,
+      "toolCalls": 5,
+      "promptTokens": 16268,
+      "completionTokens": 1534,
+      "prefillTps": 6263.581746133198,
+      "decodeTps": 57.510444106596616
+    },
+    {
+      "task": "fix-bug",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 5 pass\n 0 fail\n 5 expect() calls\nRan 5 tests across 1 file. [11.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 39,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 8,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:32:26.810Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:32:26.810Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:02:26.746805+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:33:05.548Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:03:05.532882+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:33:05.548Z"
+      },
+      "status": "ok",
+      "turns": 9,
+      "toolCalls": 8,
+      "promptTokens": 33092,
+      "completionTokens": 1731,
+      "prefillTps": 4227.508751525656,
+      "decodeTps": 57.15000926582905
+    },
+    {
+      "task": "follow-conventions",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 6 pass\n 0 fail\n 6 expect() calls\nRan 6 tests across 1 file. [9.00ms]\nok: has '// why:' comment\nok: uses AppError\nok: conventions followed\n",
+      "testFilesModified": [],
+      "durationSec": 25,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 9,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:33:05.577Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:33:05.577Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:03:05.532882+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:33:31.035Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:03:31.021651+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:33:31.035Z"
+      },
+      "status": "ok",
+      "turns": 4,
+      "toolCalls": 5,
+      "promptTokens": 12879,
+      "completionTokens": 1254,
+      "prefillTps": 4243.600249495622,
+      "decodeTps": 56.81345817494241
+    },
+    {
+      "task": "git-workflow",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 3 pass\n 0 fail\n 3 expect() calls\nRan 3 tests across 1 file. [9.00ms]\nok: git workflow complete\n",
+      "testFilesModified": [],
+      "durationSec": 68,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 10,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:33:31.108Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:33:31.108Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:03:31.021651+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:34:38.721Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:04:38.704177+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:34:38.722Z"
+      },
+      "status": "ok",
+      "turns": 17,
+      "toolCalls": 19,
+      "promptTokens": 79722,
+      "completionTokens": 2433,
+      "prefillTps": 3471.701314366556,
+      "decodeTps": 56.827644067887654
+    },
+    {
+      "task": "hard-multi",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 9 pass\n 0 fail\n 13 expect() calls\nRan 9 tests across 3 files. [44.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 79,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 11,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:34:38.827Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:34:38.827Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:04:38.704177+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:35:57.838Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:05:57.818544+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:35:57.838Z"
+      },
+      "status": "ok",
+      "turns": 13,
+      "toolCalls": 17,
+      "promptTokens": 69417,
+      "completionTokens": 3453,
+      "prefillTps": 4978.137773299348,
+      "decodeTps": 53.8931141752859
+    },
+    {
+      "task": "large-codebase",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 22 pass\n 0 fail\n 36 expect() calls\nRan 22 tests across 8 files. [16.00ms]\nok: all tests pass\n",
+      "testFilesModified": [],
+      "durationSec": 68,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 12,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:35:57.905Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:35:57.905Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:05:57.818544+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:37:05.793Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:07:05.760415+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:37:05.794Z"
+      },
+      "status": "ok",
+      "turns": 13,
+      "toolCalls": 16,
+      "promptTokens": 70370,
+      "completionTokens": 3065,
+      "prefillTps": 7891.087074899504,
+      "decodeTps": 52.95542590623667
+    },
+    {
+      "task": "no-repro",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 10 pass\n 0 fail\n 10 expect() calls\nRan 10 tests across 1 file. [8.00ms]\nok: phantom bug correctly reported not-reproducible; src/ and ISSUE.md intact\n",
+      "testFilesModified": [],
+      "durationSec": 37,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 13,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:37:05.854Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:37:05.854Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:07:05.760415+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:37:43.040Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:07:43.023047+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:37:43.041Z"
+      },
+      "status": "ok",
+      "turns": 6,
+      "toolCalls": 8,
+      "promptTokens": 24399,
+      "completionTokens": 1682,
+      "prefillTps": 4865.9476203144895,
+      "decodeTps": 53.03971489144674
+    },
+    {
+      "task": "perf-fix",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 7 pass\n 0 fail\n 9 expect() calls\nRan 7 tests across 1 file. [79.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 24,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 14,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:37:43.142Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:37:43.142Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:07:43.023047+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:38:07.353Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:08:07.335094+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:38:07.353Z"
+      },
+      "status": "ok",
+      "turns": 4,
+      "toolCalls": 4,
+      "promptTokens": 17158,
+      "completionTokens": 1020,
+      "prefillTps": 3618.3419018880622,
+      "decodeTps": 53.46007774633382
+    },
+    {
+      "task": "refactor",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 9 pass\n 0 fail\n 9 expect() calls\nRan 9 tests across 2 files. [10.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 63,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 15,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:38:07.450Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:38:07.450Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:08:07.335094+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:39:10.806Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:09:10.786389+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:39:10.806Z"
+      },
+      "status": "ok",
+      "turns": 15,
+      "toolCalls": 19,
+      "promptTokens": 67178,
+      "completionTokens": 2557,
+      "prefillTps": 4416.819180111913,
+      "decodeTps": 54.28409343589609
+    },
+    {
+      "task": "rename-sweep",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 13 pass\n 0 fail\n 13 expect() calls\nRan 13 tests across 1 file. [11.00ms]\nok: rename sweep complete\n",
+      "testFilesModified": [],
+      "durationSec": 272,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 16,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:39:10.839Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:39:10.839Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:09:10.786389+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:43:42.713Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:13:42.686081+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:43:42.714Z"
+      },
+      "status": "ok",
+      "turns": 27,
+      "toolCalls": 64,
+      "promptTokens": 315828,
+      "completionTokens": 9657,
+      "prefillTps": 4261.052311868586,
+      "decodeTps": 49.65388613926346
+    },
+    {
+      "task": "spec-feature",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 33 pass\n 0 fail\n 42 expect() calls\nRan 33 tests across 2 files. [19.00ms]\nok: spec implemented, SPEC.md intact\n",
+      "testFilesModified": [],
+      "durationSec": 201,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 17,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:43:42.891Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:43:42.891Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:13:42.686081+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:47:04.351Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:17:04.326808+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:47:04.351Z"
+      },
+      "status": "ok",
+      "turns": 17,
+      "toolCalls": 21,
+      "promptTokens": 163139,
+      "completionTokens": 7589,
+      "prefillTps": 3622.3551085100007,
+      "decodeTps": 49.072659615485684
+    },
+    {
+      "task": "test-triage",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 33 pass\n 0 fail\n 38 expect() calls\nRan 33 tests across 7 files. [13.00ms]\n",
+      "testFilesModified": [],
+      "durationSec": 50,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 18,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:47:04.439Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:47:04.439Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:17:04.326808+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:47:54.638Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:17:54.617269+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:47:54.639Z"
+      },
+      "status": "ok",
+      "turns": 9,
+      "toolCalls": 19,
+      "promptTokens": 65407,
+      "completionTokens": 1848,
+      "prefillTps": 5243.543335612507,
+      "decodeTps": 50.15098349796543
+    },
+    {
+      "task": "type-repair",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 6 pass\n 0 fail\n 8 expect() calls\nRan 6 tests across 2 files. [6.00ms]\nok: types fixed, tests pass, no escape hatches, tsconfig intact\n",
+      "testFilesModified": [],
+      "durationSec": 256,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 19,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:47:54.674Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:47:54.674Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:17:54.617269+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:52:11.166Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:22:11.141905+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:52:11.168Z"
+      },
+      "status": "ok",
+      "turns": 19,
+      "toolCalls": 23,
+      "promptTokens": 101221,
+      "completionTokens": 6084,
+      "prefillTps": 5850.597492579607,
+      "decodeTps": 50.81114726751655
+    },
+    {
+      "task": "write-tests",
+      "agent": "harness",
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "passed": true,
+      "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 9 pass\n 0 fail\n 19 expect() calls\nRan 9 tests across 1 file. [9.00ms]\nok: test/slug.test.ts kills all 4 mutants, src/slug.ts intact\n",
+      "testFilesModified": [],
+      "durationSec": 70,
+      "agentExitCode": 0,
+      "workdir": "(removed)",
+      "run": {
+        "experimentId": "a1-recheck",
+        "runId": "a1-recheck",
+        "repetition": 1,
+        "repeat": 1,
+        "orderSeed": "0",
+        "armOrder": [
+          "harness"
+        ],
+        "armPosition": 0,
+        "sequenceInArm": 20,
+        "cacheState": "warm",
+        "environment": {
+          "capturedAt": "2026-09-02T00:10:59.252Z",
+          "platform": "darwin",
+          "release": "25.6.0",
+          "arch": "arm64",
+          "git": {
+            "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+            "dirty": true,
+            "error": null
+          },
+          "model": {
+            "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+            "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+            "quantization": "Q4_K_M",
+            "error": null
+          },
+          "ollama": {
+            "version": "ollama version is 0.32.15",
+            "error": null
+          },
+          "gpu": {
+            "name": "Apple M3 Max",
+            "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+            "error": null
+          },
+          "caller": {
+            "name": "eval/run.ts",
+            "version": "1.2.21",
+            "error": null
+          },
+          "claudeCli": {
+            "version": "2.1.77 (Claude Code)",
+            "error": null
+          }
+        },
+        "startedAt": "2026-09-02T00:52:11.507Z",
+        "runners": {
+          "before": {
+            "captured_at": "2026-09-02T00:52:11.507Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:22:11.141905+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          },
+          "after": {
+            "captured_at": "2026-09-02T00:53:21.143Z",
+            "models": [
+              {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                "expires_at": "2026-09-02T10:23:21.122831+09:00",
+                "size": 22364752443,
+                "size_vram": 22364752443,
+                "context_length": 32768
+              }
+            ]
+          }
+        },
+        "endedAt": "2026-09-02T00:53:21.144Z"
+      },
+      "status": "ok",
+      "turns": 9,
+      "toolCalls": 14,
+      "promptTokens": 50713,
+      "completionTokens": 3060,
+      "prefillTps": 6587.547167801568,
+      "decodeTps": 50.73125119678504
+    }
+  ]
+}

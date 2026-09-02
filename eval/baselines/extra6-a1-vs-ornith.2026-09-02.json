@@ -1,0 +1,1205 @@
+{
+  "cell": "extra6",
+  "capturedAt": "2026-09-02",
+  "note": "未計測だった6タスク(think-runaway / mass-migration / incident-analysis / data-analysis / requirements-synthesis / config-audit)を Agents-A1 と Ornith-1.5-35B-A3B で同一run内インターリーブ実測(--arms harness-a1,harness-ornith --run-id extra6 --order-seed 20260902、2026-09-02)。専用daemon(11500)・M3 Max 64GB・Ollama 0.32.15・n=1。結果: A1 1/6 PASS(1,358s) vs Ornith 6/6 PASS(639s)。A1のFAIL5件の内訳は、(i)成果物を作業ディレクトリ直下でなく入力の隣のサブディレクトリに書く同一根因のパス誤り3件(deploy/AUDIT.md / data/ANALYSIS.md / briefs/DECISION.md)、(ii)incident-analysis の内容不足1件(recovery・failed_requests・evidence>=3・action>=2 が不足)、(iii)mass-migration の max_iterations 打ち切り1件(61 turns)。この4本の非コーディングfixtureはharnessアームでの実測が初で、Ornithが4/4通したことでfixture自体は harness で解けることが確認された。注意: config-audit/data-analysis/requirements-synthesis のプロンプトは出力ファイル名をパス指定なしで示し、verifyは作業ディレクトリ直下を要求するため、パス規約の厳しさがA1のFAIL3件に効いている。",
+  "arms": {
+    "harness-a1": {
+      "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+      "results": [
+        {
+          "task": "config-audit",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": false,
+          "verifyOutput": "FAIL: AUDIT.md not found\n",
+          "testFilesModified": [],
+          "durationSec": 48,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 1,
+            "cacheState": "cold",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T00:54:28.814Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T00:54:28.814Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:23:21.122831+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T00:55:16.493Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:25:16.477754+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T00:55:16.493Z"
+          },
+          "status": "ok",
+          "turns": 5,
+          "toolCalls": 7,
+          "promptTokens": 15626,
+          "completionTokens": 2781,
+          "prefillTps": 4480.618443482586,
+          "decodeTps": 63.326910316252004
+        },
+        {
+          "task": "data-analysis",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": false,
+          "verifyOutput": "FAIL: ANALYSIS.md not found\n",
+          "testFilesModified": [],
+          "durationSec": 270,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 2,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T00:56:06.255Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T00:56:06.255Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:26:06.129332+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:00:36.750Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:30:36.734097+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:00:36.750Z"
+          },
+          "status": "ok",
+          "turns": 14,
+          "toolCalls": 13,
+          "promptTokens": 80212,
+          "completionTokens": 9446,
+          "prefillTps": 5225.746489483407,
+          "decodeTps": 54.27810596003367
+        },
+        {
+          "task": "incident-analysis",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": false,
+          "verifyOutput": "ok: verdict\nok: service\nok: start\nFAIL: recovery\nFAIL: failed_requests\nok: root_cause\nFAIL: expected >=3 evidence bullets\nFAIL: expected >=2 action bullets\n",
+          "testFilesModified": [],
+          "durationSec": 83,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 3,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:02:38.853Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:02:38.853Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:32:38.691119+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:04:02.331Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:34:02.286404+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:04:02.332Z"
+          },
+          "status": "ok",
+          "turns": 5,
+          "toolCalls": 7,
+          "promptTokens": 18645,
+          "completionTokens": 2607,
+          "prefillTps": 2518.373183600548,
+          "decodeTps": 37.661111221784665
+        },
+        {
+          "task": "mass-migration",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": false,
+          "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\ntest/migration.test.ts:\n\n# Unhandled error between tests\n-------------------------------\n1 | (function (entry, fetcher)\n              ^\nSyntaxError: Export named 'revenueSummary' not found in module '/private/var/folders/k9/0d1smgqj6f9_hkzf80qfbw80941m76/T/lh-eval-mass-migration-syeqce/src/reports/revenue.ts'.\n      at loadAndEvaluateModule (1:11)\n-------------------------------\n\n\n 0 pass\n 1 fail\n 1 error\nRan 1 test across 1 file. [10.00ms]\nFAIL: bun test\n",
+          "testFilesModified": [],
+          "durationSec": 664,
+          "agentExitCode": 1,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 4,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:06:37.687Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:06:37.687Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:36:37.402862+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:17:41.616Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:47:41.583416+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:17:41.616Z"
+          },
+          "status": "max_iterations",
+          "turns": 61,
+          "toolCalls": 103,
+          "promptTokens": 914462,
+          "completionTokens": 17985,
+          "prefillTps": 4799.13716272531,
+          "decodeTps": 44.21080990473225
+        },
+        {
+          "task": "requirements-synthesis",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": false,
+          "verifyOutput": "FAIL: DECISION.md not found\n",
+          "testFilesModified": [],
+          "durationSec": 48,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 5,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:19:12.159Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:19:12.159Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:49:11.797809+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:20:00.468Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:50:00.450401+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:20:00.468Z"
+          },
+          "status": "ok",
+          "turns": 5,
+          "toolCalls": 7,
+          "promptTokens": 15184,
+          "completionTokens": 2268,
+          "prefillTps": 3018.938150538524,
+          "decodeTps": 55.51305728054114
+        },
+        {
+          "task": "think-runaway",
+          "agent": "harness-a1",
+          "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 2 pass\n 0 fail\n 7 expect() calls\nRan 2 tests across 1 file. [9.00ms]\n",
+          "testFilesModified": [],
+          "durationSec": 245,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 0,
+            "sequenceInArm": 6,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.279Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-a1 does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:21:47.401Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:21:47.401Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:51:47.213641+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:25:51.973Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:55:51.953509+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:25:51.974Z"
+          },
+          "status": "ok",
+          "turns": 12,
+          "toolCalls": 13,
+          "promptTokens": 54477,
+          "completionTokens": 6769,
+          "prefillTps": 6556.521155152226,
+          "decodeTps": 55.532537095144086
+        }
+      ]
+    },
+    "harness-ornith": {
+      "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+      "results": [
+        {
+          "task": "config-audit",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "",
+          "testFilesModified": [],
+          "durationSec": 50,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 1,
+            "cacheState": "cold",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T00:55:16.512Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T00:55:16.512Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:25:16.477754+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T00:56:06.142Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:26:06.129332+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T00:56:06.143Z"
+          },
+          "status": "ok",
+          "turns": 6,
+          "toolCalls": 9,
+          "promptTokens": 25048,
+          "completionTokens": 1980,
+          "prefillTps": 4239.936962930175,
+          "decodeTps": 64.60668786455406
+        },
+        {
+          "task": "data-analysis",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "",
+          "testFilesModified": [],
+          "durationSec": 122,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 2,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:00:36.768Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:00:36.768Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:30:36.734097+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:02:38.708Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:32:38.691119+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:02:38.709Z"
+          },
+          "status": "ok",
+          "turns": 6,
+          "toolCalls": 8,
+          "promptTokens": 26276,
+          "completionTokens": 2109,
+          "prefillTps": 3608.8355215114807,
+          "decodeTps": 48.93467200404954
+        },
+        {
+          "task": "incident-analysis",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "ok: verdict\nok: service\nok: start\nok: recovery\nok: failed_requests\nok: root_cause\n",
+          "testFilesModified": [],
+          "durationSec": 155,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 3,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:04:02.595Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:04:02.595Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:34:02.286404+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:06:37.428Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:36:37.402862+09:00",
+                    "size": 21972752792,
+                    "size_vram": 21972752792,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:06:37.429Z"
+          },
+          "status": "ok",
+          "turns": 7,
+          "toolCalls": 10,
+          "promptTokens": 37910,
+          "completionTokens": 2552,
+          "prefillTps": 5161.921765363627,
+          "decodeTps": 35.92455213401412
+        },
+        {
+          "task": "mass-migration",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 46 pass\n 0 fail\n 46 expect() calls\nRan 46 tests across 1 file. [13.00ms]\nok: mass migration complete (40 files, 46 sites)\n",
+          "testFilesModified": [],
+          "durationSec": 90,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 4,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:17:41.905Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:17:41.905Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:47:41.583416+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:19:11.833Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:49:11.797809+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:19:11.833Z"
+          },
+          "status": "ok",
+          "turns": 12,
+          "toolCalls": 18,
+          "promptTokens": 116170,
+          "completionTokens": 3150,
+          "prefillTps": 6425.441673754268,
+          "decodeTps": 52.187950845908695
+        },
+        {
+          "task": "requirements-synthesis",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "",
+          "testFilesModified": [],
+          "durationSec": 107,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 5,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:20:00.489Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:20:00.489Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:50:00.450401+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:21:47.231Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:51:47.213641+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:21:47.232Z"
+          },
+          "status": "ok",
+          "turns": 12,
+          "toolCalls": 20,
+          "promptTokens": 71620,
+          "completionTokens": 3524,
+          "prefillTps": 7215.755938591319,
+          "decodeTps": 54.25202643403816
+        },
+        {
+          "task": "think-runaway",
+          "agent": "harness-ornith",
+          "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+          "passed": true,
+          "verifyOutput": "bun test v1.2.21 (7c45ed97)\n\n 2 pass\n 0 fail\n 7 expect() calls\nRan 2 tests across 1 file. [12.00ms]\n",
+          "testFilesModified": [],
+          "durationSec": 115,
+          "agentExitCode": 0,
+          "workdir": "(removed)",
+          "run": {
+            "experimentId": "extra6",
+            "runId": "extra6",
+            "repetition": 1,
+            "repeat": 1,
+            "orderSeed": "20260902",
+            "armOrder": [
+              "harness-a1",
+              "harness-ornith"
+            ],
+            "armPosition": 1,
+            "sequenceInArm": 6,
+            "cacheState": "warm",
+            "environment": {
+              "capturedAt": "2026-09-02T00:54:28.800Z",
+              "platform": "darwin",
+              "release": "25.6.0",
+              "arch": "arm64",
+              "git": {
+                "commit": "6f510109b7b883156e381f7aaacc3269b96fad11",
+                "dirty": true,
+                "error": null
+              },
+              "model": {
+                "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                "digest": null,
+                "quantization": null,
+                "error": "agent harness-ornith does not use a local Ollama model"
+              },
+              "ollama": {
+                "version": "ollama version is 0.32.15",
+                "error": null
+              },
+              "gpu": {
+                "name": "Apple M3 Max",
+                "details": "[{\"_name\": \"Apple M3 Max\", \"spdisplays_mtlgpufamilysupport\": \"spdisplays_metal4\", \"spdisplays_ndrvs\": \"[redacted: 1 attached display(s)]\", \"spdisplays_vendor\": \"sppci_vendor_Apple\", \"sppci_bus\": \"spdisplays_builtin\", \"sppci_cores\": \"40\", \"sppci_device_type\": \"spdisplays_gpu\", \"sppci_model\": \"Apple M3 Max\"}]",
+                "error": null
+              },
+              "caller": {
+                "name": "eval/run.ts",
+                "version": "1.2.21",
+                "error": null
+              },
+              "claudeCli": {
+                "version": "2.1.77 (Claude Code)",
+                "error": null
+              }
+            },
+            "startedAt": "2026-09-02T01:25:52.003Z",
+            "runners": {
+              "before": {
+                "captured_at": "2026-09-02T01:25:52.003Z",
+                "models": [
+                  {
+                    "name": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "model": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M",
+                    "digest": "4b4f56e12696fbac98b6b97ecc7d1985423c95c31d142e6b0d3d97a482397b99",
+                    "expires_at": "2026-09-02T10:55:51.953509+09:00",
+                    "size": 22364752443,
+                    "size_vram": 22364752443,
+                    "context_length": 32768
+                  }
+                ]
+              },
+              "after": {
+                "captured_at": "2026-09-02T01:27:46.919Z",
+                "models": [
+                  {
+                    "name": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "model": "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M",
+                    "digest": "e418857d056538b10aaffb08e62148e1841fed50ed8c0ba44b6d2de0036e332e",
+                    "expires_at": "2026-09-02T10:57:46.899301+09:00",
+                    "size": 22258814810,
+                    "size_vram": 22258814810,
+                    "context_length": 32768
+                  }
+                ]
+              }
+            },
+            "endedAt": "2026-09-02T01:27:46.920Z"
+          },
+          "status": "ok",
+          "turns": 11,
+          "toolCalls": 12,
+          "promptTokens": 47753,
+          "completionTokens": 5668,
+          "prefillTps": 5329.852497925394,
+          "decodeTps": 55.60515240403009
+        }
+      ]
+    }
+  }
+}

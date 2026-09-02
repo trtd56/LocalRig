@@ -7,11 +7,11 @@ import { parseArgs, resolveThink } from "../src/index.ts";
 
 describe("defaultConfig", () => {
   test("new knobs have their documented defaults", () => {
-    // Default model is Agents-A1 (2026-07-21), so profile-backed knobs carry
-    // AGENTS_A1_PROFILE values unless LH_* env vars pin them.
-    expect(defaultConfig.model).toBe("hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M");
+    // Default model is Ornith-1.5-35B-A3B (2026-09-02), so profile-backed knobs
+    // carry ORNITH_PROFILE values unless LH_* env vars pin them.
+    expect(defaultConfig.model).toBe("hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M");
     expect(defaultConfig.thinkBudgetChars).toBe(6000);
-    expect(defaultConfig.presencePenalty).toBe(1.1);
+    expect(defaultConfig.presencePenalty).toBe(1.0);
     expect(defaultConfig.maxTimeMs).toBe(0);
     expect(defaultConfig.headroomTokens).toBe(4096);
     expect(defaultConfig.numPredict).toBe(16384);
@@ -162,6 +162,15 @@ describe("resolveProfile (model profiles)", () => {
     // the dedicated pattern must win and carry the HF-recommended sampling.
     const profile = resolveProfile("hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M");
     expect(profile).toEqual({ temperature: 0.85, topP: 0.95, topK: 20, presencePenalty: 1.1, thinkBudgetChars: 6000 });
+  });
+
+  test("the Ollama HF pull name for Ornith resolves the Ornith profile", () => {
+    // Name contains no literal 'qwen' either, so without the dedicated pattern
+    // this would silently ride on DEFAULT_PROFILE (= QWEN_PROFILE), which today
+    // happens to share the same numbers — the pattern is what stops the default
+    // model from drifting if QWEN_PROFILE is ever retuned.
+    const profile = resolveProfile("hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M");
+    expect(profile).toEqual({ temperature: 0.6, topP: 0.95, topK: 20, presencePenalty: 1.0, thinkBudgetChars: 6000 });
   });
 
   test("matching is case-insensitive", () => {

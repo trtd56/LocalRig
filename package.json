@@ -1,7 +1,7 @@
 {
   "name": "localrig",
   "version": "0.1.0",
-  "description": "Coding agent harness for local LLMs (Qwen 3.6 27B via Ollama) with hardened tool-use and context management",
+  "description": "Coding agent for local LLMs (Ornith-1.5-35B-A3B via Ollama) with hardened tool-use and context management",
   "type": "module",
   "bin": {
     "localrig": "./src/index.ts",
