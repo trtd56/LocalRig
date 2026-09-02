@@ -267,13 +267,27 @@ function parseOllamaModel(model: string, cwd: string): {
   return { digest, quantization, error: errors.length > 0 ? errors.join("; ") : null };
 }
 
+/**
+ * Drop the attached-display array from a `system_profiler SPDisplaysDataType`
+ * adapter entry. It carries per-monitor serial numbers, product/vendor ids and
+ * resolutions — a hardware fingerprint of the operator's machine that says
+ * nothing about eval performance, and baselines are committed to a public
+ * repository. The GPU fields that do matter (`_name`, `sppci_cores`,
+ * `sppci_model`) are siblings and are kept.
+ */
+function redactAttachedDisplays(adapter: Record<string, unknown>): Record<string, unknown> {
+  if (!("spdisplays_ndrvs" in adapter)) return adapter;
+  const { spdisplays_ndrvs: displays, ...rest } = adapter;
+  return { ...rest, spdisplays_ndrvs: `[redacted: ${Array.isArray(displays) ? displays.length : 0} attached display(s)]` };
+}
+
 function captureGpu(cwd: string): { name: string | null; details: string | null; error: string | null } {
   if (process.platform === "darwin") {
     const result = command("system_profiler", ["SPDisplaysDataType", "-json"], cwd);
     if (!result.ok) return { name: null, details: null, error: result.error };
     try {
       const parsed = JSON.parse(result.stdout) as { SPDisplaysDataType?: Array<Record<string, unknown>> };
-      const adapters = parsed.SPDisplaysDataType ?? [];
+      const adapters = (parsed.SPDisplaysDataType ?? []).map(redactAttachedDisplays);
       const names = adapters.map((entry) => entry._name).filter((name): name is string => typeof name === "string");
       return {
         name: names.length > 0 ? names.join(", ") : null,
