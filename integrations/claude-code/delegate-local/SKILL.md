@@ -5,7 +5,9 @@ description: Route work conservatively with LocalRig's `lh advise`, delegate mec
 
 # Delegate to a local LLM (`lh`)
 
-`lh` runs LocalRig, a local coding agent (Qwen 3.6 27B via Ollama) that can read/edit/write files and run bash in a target directory. It is slower than you (minutes, not seconds) and weaker on ambiguity, but its tokens are free. Delegating mechanical work to it saves your context budget for the hard parts.
+`lh` runs LocalRig, a local coding agent (default: Ornith-1.5-35B-A3B via Ollama) that can read/edit/write files and run bash in a target directory. It is slower than you (minutes, not seconds) and weaker on ambiguity, but its tokens are free. Delegating mechanical work to it saves your context budget for the hard parts.
+
+**Project-specific setup lives in `PROJECT.md` next to this file.** Read it first: it names this repository's acceptance commands, the paths that are safe to delegate, and anything that must never be delegated here. If `PROJECT.md` is absent or still the unfilled template, fall back to the generic guidance below and infer the acceptance command from the project's own tooling.
 
 ## When to delegate
 
@@ -25,11 +27,13 @@ Delegate when ALL of these hold:
 - You can state the task with concrete file paths and an explicit definition of done.
 - Success is objectively verifiable afterwards (a test command, a grep, a small diff you can read).
 
-Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, small quick edits below the cost floor (a one-line doc fix, a couple of type errors — you'll spend more orchestrating than doing it), or anything urgent (local runs take 1–15 minutes, roughly 3–7x your own wall-clock — a heavy sweep has been measured at ~7x).
+Do NOT delegate: multi-file design work, anything requiring project-wide context or taste, security-sensitive changes, tasks you cannot verify cheaply, small quick edits below the cost floor (a one-line doc fix, a couple of type errors — you'll spend more orchestrating than doing it), or anything urgent (local runs take minutes, not seconds — assume single-digit multiples of your own wall-clock and check `lh stats --by-kind` p50/p90 for this repo's real numbers).
 
 **Before delegating a mechanical sweep, ask whether a script beats it.** If the rule is codifiable and the correct values are machine-extractable (from comments, a manifest, config), you can usually fold the whole sweep with one script you write yourself, far below the cost floor — a 40-file / 46-site change stayed at $0.23 baseline that way. "More files" does not mean "more expensive" or "bigger delegation win": realistic delegation savings top out around −30 to −50%, not −80%. Delegate the sweep only when the per-file edits need judgement a script can't capture.
 
-**These numbers are model-specific.** The cost-floor figures above and the task-selection criteria were calibrated against LocalRig running Qwen 3.6 27B's measured quality and speed. After swapping the local model, rerun the eval delegate arm (see `eval/README.md`) and re-derive the break-even and criteria before trusting them.
+**These numbers are model-specific, and the current default model has NOT been re-measured against them.** The cost floor (S ≈ $0.10, T ≈ $0.03), the wall-clock multiples, and the task-selection criteria were all calibrated against LocalRig running Qwen 3.6 27B. The default local model has changed twice since (Agents-A1 35B on 2026-07-21, Ornith-1.5-35B-A3B on 2026-09-02) **without the `claude-delegate` arm being re-run**, so treat every dollar figure here as an order-of-magnitude prior, not a measurement of the current setup.
+
+What is measured for the current model (2026-09-02, localrig arm only, n=1, see `eval/REPORT.md`): 26/26 tasks PASS at 1,849s total versus Agents-A1's 21/26 at 3,897s — 2.11x faster with zero regressions. Faster local runs move the break-even in delegation's favour, but by an unquantified amount. Two structural notes survive the model change because they are properties of the *caller's* accounting rather than the local model: the fixed cost is mostly session startup (so batching amortizes it), and a codifiable sweep is still cheaper as a script you write yourself. Re-derive the actual break-even with the eval delegate arm (see `eval/README.md`) before relying on the numbers above for a close call.
 
 ## How to call
 
@@ -111,11 +115,11 @@ git diff --staged | lh diff -q "Which changes can break callers?" --json
 lh diff --base main --cwd /abs/path/to/project -q "Which changes can break callers?" --json
 ```
 
-The harness parses files/hunks and verifies added, deleted, and context-line citations against an immutable SHA-256 diff snapshot, not the later working tree. Treat the digest as a map, inspect cited hunks yourself, and record feedback for `kind=diff`.
+LocalRig parses files/hunks and verifies added, deleted, and context-line citations against an immutable SHA-256 diff snapshot, not the later working tree. Treat the digest as a map, inspect cited hunks yourself, and record feedback for `kind=diff`.
 
 ## Research the Web — `lh research`
 
-Use `lh research` when answering a specific question would otherwise require loading several full Web pages into your context. Search/fetch/snapshotting stays harness-owned; the local model selects evidence from the fetched snapshots.
+Use `lh research` when answering a specific question would otherwise require loading several full Web pages into your context. Search/fetch/snapshotting stays LocalRig-owned; the local model selects evidence from the fetched snapshots.
 
 ```bash
 # Brave Search

@@ -1,12 +1,12 @@
 # 評価スイート
 
 LocalRig(Qwen 3.6 27B)と Claude Code (Sonnet) を同一タスク・同一検証条件で比較評価するためのスイート。
-全29タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームでのみ実測済み(harness 単体では未実測)。scout-locate / scout-honest は前処理 `lh scout` の評価用 fixture。incident-analysis / data-analysis / requirements-synthesis / config-audit は、コード変更を伴わない調査・分析・判断文書の評価用 fixture。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では harness アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で対象を明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
+全29タスク。うち mass-migration は委譲コスト計測用に追加した重量級 fixture で、これまで claude / claude-delegate アームで実測済み。localrig 単体でも 2026-09-02 に実測(extra6 セル)。scout-locate / scout-honest は前処理 `lh scout` の評価用 fixture。incident-analysis / data-analysis / requirements-synthesis / config-audit は、コード変更を伴わない調査・分析・判断文書の評価用 fixture。ランナーは `eval/tasks/` を自動走査するので `--task` 無しの一括実行では localrig アームでも実行対象に含まれる(ローカル推論が長い)——外したい場合は `--task` で対象を明示指定する。過去の実施結果と分析は [REPORT.md](REPORT.md) を参照。
 
 ## 前提
 
-- **harness 側**: Ollama が起動しており既定モデル `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` が pull 済みであること
-  (`curl -s http://localhost:11434/api/tags` で確認。旧既定 `qwen36-27b-mtp:latest` と比較する場合はそちらも pull し、`LH_EVAL_HARNESS_ARMS` で別アームにする)
+- **localrig 側**: Ollama が起動しており既定モデル `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M` が pull 済みであること
+  (`curl -s http://localhost:11434/api/tags` で確認。旧既定 `qwen36-27b-mtp:latest` と比較する場合はそちらも pull し、`LH_EVAL_LOCALRIG_ARMS` で別アームにする)
 - **baseline 側**: `claude` CLI にログイン済みであること(`--model sonnet --dangerously-skip-permissions` で起動される。API課金あり。旧21タスク構成の実測で $3 前後)
 - `bun` (このリポジトリの標準ランタイム)。type-repair タスクの verify は `bunx tsc` を使う(初回のみネットワークからダウンロード)
 
@@ -58,19 +58,19 @@ daemonは既定で`OLLAMA_NUM_PARALLEL=1`、`OLLAMA_MAX_LOADED_MODELS=1`、`OLLA
 macOSではOllama.app同梱serverを優先し、その他はPATH上の`ollama`を使う。必要なら`--binary PATH`または`OLLAMA_BIN`で固定する（CLIと常駐appのversion不一致を避ける）。
 
 ```sh
-bun run eval/run.ts --agent harness            # 全タスクをハーネスで
+bun run eval/run.ts --agent localrig           # 全タスクを LocalRig で
 bun run eval/run.ts --agent claude             # 全タスクを Claude Code (Sonnet) で
-bun run eval/run.ts --agent harness --task fix-bug,refactor   # タスク指定(カンマ区切り)
-bun run eval/run.ts --agent harness --task incident-analysis,data-analysis,requirements-synthesis,config-audit  # 非コーディング系のみ
-bun run eval/run.ts --agent harness --keep     # workdir を残して検分
+bun run eval/run.ts --agent localrig --task fix-bug,refactor  # タスク指定(カンマ区切り)
+bun run eval/run.ts --agent localrig --task incident-analysis,data-analysis,requirements-synthesis,config-audit  # 非コーディング系のみ
+bun run eval/run.ts --agent localrig --keep    # workdir を残して検分
 ```
 
 - 結果は `eval/results/summary-<agent>.json` に**タスク単位でマージ**保存される(`--task` での部分再実行は該当タスクのエントリだけ更新し、他は保持)。エージェントの生ログは `eval/results/<agent>-<task>.log`
 - `eval/results/` は gitignore 対象(実行結果はコミットしない)。スイート本体(tasks/・run.ts・REPORT.md)はコミットする
 - 判定 = 「verify コマンドが exit 0」かつ「テストファイル非改ざん」の両方
 - タスクごとの制限時間30分(ハーネスには `--max-time 1500` が渡り、SIGKILL 前に自力で切り上げる)。verify は120秒制限
-- 所要時間の過去実績: 旧構成では claude 21タスクで約20分、harness 20タスクで約110分。現在の29タスク構成は未計測で、mass-migration のローカル実行だけでも ~25分前後が加算される見込み。タスク間で Ollama を専有するので他の重い処理と並走させない
-- summary の各エントリには `model` フィールドが記録される。harness アームは `LH_MODEL`(未設定なら `defaultConfig.model`)、claude 系アームはオーケストレータに渡している `--model` の値(現状 `sonnet` 固定)
+- 所要時間の過去実績: 旧構成では claude 21タスクで約20分、localrig 20タスクで約110分(旧モデル)。2026-09-02 の Ornith 実測では localrig 26タスクで約31分、うち mass-migration は 90秒。タスク間で Ollama を専有するので他の重い処理と並走させない
+- summary の各エントリには `model` フィールドが記録される。localrig アームは `LH_MODEL`(未設定なら `defaultConfig.model`)、claude 系アームはオーケストレータに渡している `--model` の値(現状 `sonnet` 固定)
 
 ### 反復評価とCIゲート
 
@@ -95,23 +95,23 @@ bun run eval:gate -- \
   --min-cost-saving-usd 0 \
   --max-p95-sec 1800
 
-# billed costを持たないharness-vs-harness比較
-bun run eval:gate -- --run-id speed-ci --baseline harness-old --candidate harness-mtp --skip-cost
+# billed costを持たないlocalrig-vs-localrig比較
+bun run eval:gate -- --run-id speed-ci --baseline localrig-old --candidate localrig-new --skip-cost
 ```
 
 `run` metadataには反復番号、seed、実際のarm順、cold/warmラベル、git commit/dirty、model名/digest/quantization、Ollama/Claude CLI/caller version、GPUを保存する。coldはプロセス内でそのarmをまだ実行していない最初のsample、warmは先行sampleあり、という順序ラベルであり、Ollamaを強制unloadしたという意味ではない。取得不能な値は`null`にして同じ項目の`error`へ理由を残す。`eval:gate`は「品質非劣性」「上位コスト節約が指定値より大きい」「candidateのp95壁時計が予算内」のいずれかに違反、または必要な測定値が欠けるとnonzeroで終了する。閾値の`--max-quality-drop`は0〜1の比率（0.05 = 5 percentage points）。
 
 ## モデル更新時の回帰手順
 
-ローカルモデル(現行 `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M`、ベースライン `eval/baselines/agents-a1-35b-q4km.json`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。
+ローカルモデル(現行 `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M`、ベースライン `eval/baselines/ornith15-35b-a3b.json`)を更新する際、既存タスクの合否・速度・トークン数が退行していないかを旧モデルの実測値と突き合わせて確認する。
 
-1. `LH_MODEL` を新モデル名にして全タスクを harness アームで実行する(`eval/results/summary-harness.json` が上書き更新される):
+1. `LH_MODEL` を新モデル名にして全タスクを localrig アームで実行する(`eval/results/summary-localrig.json` が上書き更新される):
    ```sh
-   LH_MODEL=<新モデル名> bun run eval/run.ts --agent harness
+   LH_MODEL=<新モデル名> bun run eval/run.ts --agent localrig
    ```
 2. `eval/compare-baseline.ts` で旧 baseline と diff を取る(タスク別の pass/fail・所要時間・promptTokens/completionTokens の差分を Markdown 表で標準出力):
    ```sh
-   bun run eval/compare-baseline.ts --baseline eval/baselines/qwen36-27b-mtp.json --summary eval/results/summary-harness.json
+   bun run eval/compare-baseline.ts --baseline eval/baselines/ornith15-35b-a3b.json --summary eval/results/summary-localrig.json
    ```
 3. 退行がなければ、新モデルの summary を `eval/baselines/<新モデル名>.json` として保存しコミットする(フォーマットは `eval/baselines/qwen36-27b-mtp.json` を参照: `{"model", "capturedAt", "note", "results"}` のラッパで、`results` は summary の配列をそのまま格納する)
 

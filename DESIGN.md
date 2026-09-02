@@ -144,7 +144,7 @@ research adapterはライブWebと実モデルから切り離した固定fixture
 - 新モデル系統を採用する場合、`MODEL_PROFILES` に1エントリ(パターン文字列 + `ModelProfile` の5フィールド)を追加する。
 
 ### 回帰確認
-手順は eval/README.md の「モデル更新時の回帰手順」節を参照。要旨: 新モデルで harness アーム全タスクを実行 → `eval/compare-baseline.ts` で `eval/baselines/qwen36-27b-mtp.json` と突き合わせ → 退行がなければ新モデルの baseline を保存・コミット。
+手順は eval/README.md の「モデル更新時の回帰手順」節を参照。要旨: 新モデルで localrig アーム全タスクを実行 → `eval/compare-baseline.ts` で `eval/baselines/ornith15-35b-a3b.json` と突き合わせ → 退行がなければ新モデルの baseline を保存・コミット。
 
 ### 再計測チェックリスト
 以下は Qwen3.6 の実測で決めた値・挙動であり、モデル更新時に再計測・再確認する:

@@ -1,4 +1,4 @@
-// Shared type contracts for the harness. All modules depend on this file only
+// Shared type contracts for LocalRig. All modules depend on this file only
 // (plus config.ts) — keep it dependency-free.
 
 // ---------- Chat messages (Ollama chat API shape) ----------
@@ -22,7 +22,7 @@ export interface ChatMessage {
   tool_calls?: ToolCall[];
   /** For role:"tool" — echoes the tool name back to the model. */
   tool_name?: string;
-  // ---- Harness-internal bookkeeping (stripped before sending to Ollama) ----
+  // ---- LocalRig-internal bookkeeping (stripped before sending to Ollama) ----
   /** Actual token cost measured from Ollama counters, once known. */
   _tokens?: number;
   /** Marks a tool result that has been pruned down to a stub. */
@@ -83,7 +83,7 @@ export interface WorkspaceScope {
   cwd: string;
   allowedPaths: string[];
   protectedPaths: string[];
-  /** Harness-owned Git metadata that sandboxed commands may read/write. */
+  /** LocalRig-owned Git metadata that sandboxed commands may read/write. */
   privateGitPaths?: string[];
 }
 

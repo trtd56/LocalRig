@@ -77,7 +77,7 @@ describe("repeated run planning", () => {
   });
 
   test("preserves legacy repeat=1 run-id naming", () => {
-    const [round] = buildRunPlan({ agents: ["harness"], keep: false, repeat: 1, orderSeed: "0", runId: "old-cell" });
+    const [round] = buildRunPlan({ agents: ["localrig"], keep: false, repeat: 1, orderSeed: "0", runId: "old-cell" });
     expect(round?.runId).toBe("old-cell");
   });
 
@@ -191,7 +191,7 @@ describe("repeated statistics and CI gate", () => {
     expect(gate.checks[0]!.message).toContain("missing tasks: b");
   });
 
-  test("can skip unavailable upper-level cost for harness-vs-harness gates", () => {
+  test("can skip unavailable upper-level cost for localrig-vs-localrig gates", () => {
     const sample = (task: string, agent: string) => ({
       task, agent, passed: true, durationSec: 1,
       run: { experimentId: "h", runId: "h", repetition: 1, repeat: 1, cacheState: "warm" as const },

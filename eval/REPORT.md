@@ -1,4 +1,7 @@
-# 比較評価レポート: LocalRig (Qwen 3.6 27B) vs Claude Code (Sonnet)
+# 比較評価レポート: LocalRig vs Claude Code (Sonnet)
+
+> **命名について(2026-09-02)**: eval のローカル実行アームは `harness` から **`localrig`** に改名した(環境変数も `LH_EVAL_HARNESS_ARMS` → `LH_EVAL_LOCALRIG_ARMS`、複数アーム名の接頭辞も `harness-*` → `localrig-*`)。後方互換エイリアスは残していないため、`--agent harness` は現在エラーになる。
+> **本レポートの過去ラウンドは実行当時の記録なので書き換えていない**——旧セクションに現れる `--agent harness` / `summary-harness*.json` / `harness-a1` 等はすべて現在の `localrig` 系読み替えで再現すること。同様に、コミット済み baseline JSON 内の `"agent": "harness"` も当時の記録として残してある。
 
 実施日: 2026-07-03 / 環境: macOS (Darwin 23.6.0), 64GB RAM, Ollama 0.30.6
 ハーネス設定: `qwen36-27b-mtp:latest` (Q4_K_S), num_ctx 65536, temp 0.6 / top_p 0.95 / top_k 20
@@ -632,3 +635,136 @@ MTP アーム側は committed baseline (`eval/baselines/qwen36-27b-mtp.json`) �
 ### 結論（更新）
 
 同一ハーネス・同一条件下で、**Agents-A1 35B Q4_K_M は現行 qwen36-27b-mtp に対し wall-clock 約2.7〜3.6×高速（decode 約5〜6×）、品質は全20タスクで同等（両者 20/20 PASS）**。初回計測の唯一の差分（write-tests）はハーネスの sandbox バグと確定し、モデル起因の品質差は確認されなかった。MoE により総パラメータは大きい（34.7B）が活性が少なく、Q4_K_M（22GB）でも 64GB 機に余裕で載る。ローカル委譲先の置き換え有力候補。残タスク: (1) 委譲アーム（claude-delegate）での実測、(2) デフォルト `LH_MODEL` 切り替えの判断、(3) write 系タスクでの num_predict 暴走頻度の継続観測。
+
+## Qwen3.8 27B 比較ラウンド: qwen3.8:27b vs 現行デフォルト Agents-A1 35B (2026-09-01)
+
+Ollama に落ちてきた **Qwen3.8 27B Q4_K_M**(`qwen3.8:27b`)を、現行デフォルトの `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` とハーネス上で比較した。`ollama show` は architecture `qwen35` / 27.3B / 262kコンテキストを報告し、capability は `completion` / `vision` / `tools` / `thinking`(clip projector 460M 同梱の VLM)。Agents-A1 と同じ qwen35 系列だが、あちらが総34.7BのMoEなのに対し**こちらは27.3B dense**である点が性能特性の分かれ目になった。
+
+計測条件: 専用daemon(port 11500、parallel/max-loaded各1)、M3 Max 64GB、ベースライン20タスク × n=1、`--run-id qwen38`。サンプリングは Ollama 同梱 Modelfile の推奨値(temp 1.0 / top_p 0.95 / top_k 20 / presence 0)を env で指定した。`src/config.ts` の `MODEL_PROFILES` は `qwen` パターンで QWEN_PROFILE(Qwen3.6由来の temp 0.6 / presence 1.0)に substring マッチしてしまうため、**専用 profile を追加しない限り env 無指定では推奨外の温度で走る**。比較先は `eval/baselines/agents-a1-35b-q4km.json`(20/20 PASS / 2,765s)。
+
+### 結果: 品質は同等、速度は約2倍遅い、トークンは大幅減
+
+| metric | Agents-A1 35B (MoE) | Qwen3.8 27B (dense) | Δ |
+|---|---:|---:|---|
+| 品質 | **20/20 PASS** | **20/20 PASS** | ±0 |
+| 総wall-clock(20タスク) | 2,765s | 5,605s | **+103%(2.03×低速)** |
+| wall比 中央値 / 最良 / 最悪 | — | 2.56× / 0.56× / 5.11× | 高速化は20タスク中1本のみ |
+| turns 合計 / 中央値 | 298 / 14 | **143 / 6** | **−52%** |
+| toolCalls 合計 / 中央値 | 337 / 14 | 243 / 11 | −28% |
+| promptTokens 合計 | 2,149,588 | **784,721** | **−63.5%** |
+| completionTokens 合計 | 100,491 | **40,589** | **−59.6%** |
+| decode tok/s 中央値 | 54.0(a1-quality実測) | **10.5**(8.0〜12.9) | 約1/5 |
+| prefill tok/s 中央値 | 3,087(同上) | 636 | 約1/5 |
+
+**品質差は検出されなかった。** 20タスク全てで status=ok / exit=0、テストファイル改竄ゼロ、`write-tests` の mutation ガード(`kills all 4 mutants, src/slug.ts intact`)や `no-repro` の「再現しないと正しく報告する」ガードも含めて全て素通り。ハーネス側の故障モード検知(`bad_tool_call` リトライ、thinking watchdog、prune/compact、sandbox の permission エラー)は**発火回数ゼロ**で、ツールコールの脆さもコンテキスト溢れも観測されなかった。
+
+**遅さの原因は生の生成スループット。** decode 10.5 tok/s は Agents-A1 の 54 tok/s に対して約1/5で、これは 34.7B MoE(活性パラメータが少ない)対 27.3B dense というアーキテクチャ差そのもの。Agents-A1 導入時に確認した「MTP比3.4×高速の勝因は手数削減ではなくトークンあたりスループット」という構図が、今回はそのまま裏返しで効いている。実測 decode は旧 qwen36-27b-mtp の 9.1〜10.4 tok/s とほぼ同水準で、**dense 27B クラスの天井**とみてよい。
+
+**一方でトークン効率は明確に改善している。** turns 合計は 298→143 と半減し、prompt/completion とも約6割減。同じタスクを**半分の手数・4割のトークン**で解いており、5倍遅い decode を 2倍遅で踏みとどまらせているのはこの効率差である。turn あたり completion は 337→284 トークンとほぼ横ばいなので、1ターンが長くなったのではなく**無駄な往復が減った**形。委譲先としてのコスト観点(上位エージェントに返す要約量、`lh distill` / `lh scout` の圧縮率)ではむしろ有利に働く可能性がある。
+
+タスク別では `spec-feature` のみ 369s→205s(0.56×)と高速化しており、これは turns 21→6 の効率差が decode 差を上回った唯一のケース。逆に最悪は `add-feature` の 5.11×(19s→97s)だが、これは絶対値が小さく turns 4→4 と同じ手数なので、純粋に生成速度差が出ただけのタスクである。
+
+### 結論
+
+**Qwen3.8 27B は現行スイートで Agents-A1 と品質同等(両者 20/20)、wall-clock 約2.0×低速、トークン消費は約6割減。**速度が主要因である現行の委譲設計(ローカル側は「機械的で検証しやすい作業」を速く回す担当)では、**デフォルト `LH_MODEL` を切り替える積極的な理由はない**。
+
+ただし本ラウンドで測れていないことが2つある。**(1) 品質は天井に張り付いており差が出ない。** 20タスク中20タスクを両モデルが通す以上、この n=1 スイートは両者の accuracy を分離できていない。「精度がどう変わるか」を本当に測るなら、より難しい fixture の追加か、`--repeat N` による分散込みの比較が要る。**(2) 未評価の軸が残る。** `qwen3.8-coder`(num_ctx 65536 が Modelfile に焼かれた別タグ)、vision capability、非コーディング系4タスク、`claude-delegate` アームでの上位コスト削減効果はいずれも未計測。トークン効率−60%は委譲アームで効く可能性があるため、そこは測る価値がある。
+
+なお `src/config.ts` の profile マッチには落とし穴がある。`qwen3.8:27b` は `qwen` パターンに掛かり Qwen3.6 由来の temp 0.6 / presence 1.0 が当たるため、本ラウンドと同条件を再現するには env 指定が必須。将来デフォルト化する場合は Agents-A1 と同様に `qwen3.8` パターンを `qwen` より前に置いた専用 profile を追加すること。実測値は `eval/baselines/qwen38-27b.json` に保存済み。
+
+## Ornith-1.5-35B-A3B 比較ラウンド: Ornith-1.5 35B-A3B vs 現行デフォルト Agents-A1 35B (2026-09-02)
+
+Deep Reinforce の **Ornith-1.5-35B-A3B**(`ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M`、22GB)をハーネス上で現行デフォルト `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` と比較した。`ollama show` は architecture `qwen35moe` / 35.5B / 262kコンテキストを報告し、capability は `completion` / `tools` / `thinking` / `vision`(clip projector 446M 同梱)。**現行デフォルトの Agents-A1 と同じ qwen35moe 系列の MoE で、活性パラメータは約3B**——前ラウンドの qwen3.8 27B が dense で速度負けした構図に対し、こちらは同じ MoE 側に立っている。HFカードによれば Ornith-1.0(Qwen3.5 と Gemma4 をベースに継続事前学習・mid-training・post-training を追加したもの)に対し、タスク生成・scaffold構築・rolloutを同時に最適化する self-improvement ループを回した系列。
+
+計測条件: 専用daemon(port 11500、parallel/max-loaded各1)、M3 Max 64GB、ベースライン20タスク × n=1、`--run-id ornith15`。**サンプリングは env 無指定**——このモデルの Ollama Modelfile はサンプリングを一切焼いておらず(`stop` トークン4件のみ)、HFカードの汎用推奨 `temperature=0.6 / top_p=0.95 / top_k=20` が `resolveProfile` のフォールバック(`QWEN_PROFILE`)と偶然一致するため、`LH_MODEL` を差し替えるだけで推奨値どおりに走る。`presence_penalty` はカードもModelfileも指定が無く、ハーネス既定の 1.0 が当たっている。比較先は `eval/baselines/agents-a1-35b-q4km.json`(20/20 PASS / 2,765s)。
+
+### 結果: 品質は同等(両者 20/20)、wall-clock 2.29倍高速、トークンも削減
+
+| metric | Agents-A1 35B (MoE) | Ornith-1.5 35B-A3B (MoE) | Δ |
+|---|---:|---:|---|
+| 品質 | **20/20 PASS** | **20/20 PASS** | ±0 |
+| 総wall-clock(20タスク) | 2,765s | **1,210s** | **−56.2%(2.29×高速)** |
+| wall比 中央値 / 最良 / 最悪 | — | 0.45× / 0.19×(type-repair) / 2.57×(perf-fix) | 20タスク中19本で高速化 |
+| turns 合計 / 中央値 | 298 / 14 | **218 / 9** | −26.8% |
+| toolCalls 合計 / 中央値 | 337 / 14 | 280 / 12 | −16.9% |
+| promptTokens 合計 | 2,149,588 | **1,492,770** | **−30.6%** |
+| completionTokens 合計 | 100,491 | **51,241** | **−49.0%** |
+| decode tok/s 中央値 | 54.0 ※ | **58.4**(56.3〜71.0) | (+8%) |
+| prefill tok/s 中央値 | 3,087 ※ | **5,179**(2,156〜15,131) | (+68%) |
+
+※ **A1側の decode/prefill は当初 like-for-like ではなかった**(`eval/baselines/agents-a1-35b-q4km.json` は旧スキーマで `decodeTps`/`prefillTps` を持たず、別run記述からの引用だった)。**後述の同日再測定で実測に置き換え済み**——正しい値は decode 54.1(+7.9%)、prefill 4,660(+11.1%)で、prefill の +68% は引用値の古さによる見かけ上の差だった。以下の表は「旧baseline比」として残す。
+
+**品質差は検出されなかった。** 20タスク全てで status=ok / verify exit=0、テストファイル改竄ゼロ。`write-tests` の mutation ガード(`kills all 4 mutants, src/slug.ts intact`)、`no-repro` の迎合バイアス検査も素通り。ハーネス側の故障モードでは `bad_tool_call` リトライ・tool-call repair・prune/compact・sandbox permission エラーがいずれも**発火ゼロ**。唯一発火したのは thinking watchdog(6000字)で、`async-race`×2 / `breaking-upgrade`×1 / `spec-feature`×1 の計4ターン——ただし3タスクすべて PASS しており、中断後の再開で復帰している。思考量はモデル呼び出し222回で計81,986字(平均369字/回)と概して短く、reasoning model でありながら watchdog を日常的に叩く挙動ではない。
+
+**高速化の主因は「手数削減」であって、トークン効率の改善ではない。** ターン数で正規化すると、promptTokens/turn は 7,213→6,848 の **−5.1% にとどまる**——つまり promptTokens 合計 −30.6% は、ほぼ全量が turns −26.8% の言い換えであり、「同じ文脈をより少ないトークンで扱えている」ことを示していない。独立に改善しているのは completionTokens/turn の 337→235(−30.3%)だけで、これは**1ターンの出力が短くなった**ことを意味する。逆に toolCalls/turn は 1.13→1.28(+13.6%)と微増しており、1ターンあたりの仕事量はむしろ増えている。生スループット(decode)側の寄与は上記※のとおり厳密には比較できていない。wall-clock の 99%(1,197s/1,210s)はモデル時間でツール実行は10秒に過ぎないので、手数削減と出力長短縮がそのまま総時間に出る。効きが最も大きいのは重量級タスクで、`type-repair` 251→47s(0.19×)、`async-race` 348→97s(0.28×)、`breaking-upgrade` 639→188s(0.29×)、`spec-feature` 369→130s(0.35×)。
+
+**唯一の退行 `perf-fix`(44→113s、2.57×)は品質行動の差であって故障ではない。** ログを追うと、O(n) 化の初回実装が「2回目の出現時に記録する」方式で、既存の「初出順を保持する」正当性テストに抵触した。モデルはこれを自分で検知し、seed付きの自作ベンチマークスクリプト(`dbg.ts`/`dbg2.ts`)を書いて N を振って実測し、挿入順を保持する Map 方式に切り替え、最後に `rm -f dbg.ts dbg2.ts` でデバッグ資材を掃除している。最終報告にも「最初の実装は second-occurrence 順で誤っていたので気付いて直した」と自己申告があり、Agents-A1 の write-tests で問題になった不正確な自己申告とは逆方向の挙動。追加コストは自発的な実証検証の代金である。なお `/tmp` への書き込みは sandbox に弾かれ、モデルは即座に workdir へ置き直しており、sandbox 境界の扱いも正しい。
+
+`rename-sweep` は 173→147s(0.85×)と伸びが小さく、turns は 28→41 と増え promptTokens も 264k→409k に増えた唯一のタスク。todo ツールで12ファイルを列挙し read→edit を1ファイルずつ回す律儀な進め方で、手数は増えるが取りこぼしは無かった(23箇所すべて PASS)。
+
+### 同日対照ラウンド: Agents-A1 を今日のスタックで再測定 (`--run-id a1-recheck`)
+
+上の比較は6週間前の baseline に対するものだったため、**同日・同 Ollama(0.32.15)・同daemon(11500)で Agents-A1 の20タスクを測り直した**。結果、旧baselineとの比較で膨らんでいた数字が複数あることが判明した。
+
+| metric | A1(7月baseline) | **A1(同日再測定)** | A1の自己再現差 | Ornith | **vs A1同日** | (旧baseline比) |
+|---|---:|---:|---:|---:|---:|---:|
+| 品質 | 20/20 | **20/20** | ±0 | 20/20 | ±0 | ±0 |
+| 総wall-clock | 2,765s | **2,539s** | −8.2% | 1,210s | **−52.3%(2.10×)** | (−56.2%/2.29×) |
+| turns | 298 | **253** | −15.1% | 218 | **−13.8%** | (−26.8%) |
+| toolCalls | 337 | **335** | −0.6% | 280 | −16.4% | (−16.9%) |
+| promptTokens | 2,149,588 | **1,787,339** | −16.9% | 1,492,770 | **−16.5%** | (−30.6%) |
+| completionTokens | 100,491 | **77,096** | −23.3% | 51,241 | −33.5% | (−49.0%) |
+| decode tok/s 中央値 | (引用値 54.0) | **54.1** | — | 58.4 | **+7.9%** | (+8%) |
+| prefill tok/s 中央値 | (引用値 3,087) | **4,660** | — | 5,179 | **+11.1%** | (+68%) |
+
+**(a) 速度優位は本物。** ハーネスのソースは baseline 捕捉日以降 `src/` に変更が無く、Ollama も同版。A1 の20タスク合計は 2,765s→2,539s と **−8.2% しか動かなかった**ので、環境ドリフトは小さい。その上で Ornith は 1,210s、**同日対照でも 2.10× 高速**。20タスク合計という集計量のノイズ幅(±8%)に対して桁違いに大きく、この結論は動かない。
+
+**(b) だがトークン効率の主張はほぼ崩れた。** A1 が**自分自身を再現しただけ**で turns −15.1% / promptTokens −16.9% / completionTokens −23.3% 動いている。この自己ノイズ幅と並べると、Ornith の turns −13.8% と promptTokens −16.5% は**ノイズの内側**であり、本ラウンドの n=1 では有意な差として主張できない。生き残るのは completionTokens/turn の 304.7→235.1(−22.9%)程度で、それも自己ノイズと同オーダー。前節で「−31%」「−49%」と書いた値は、**約半分が A1 側の run 間ばらつき**だった。
+
+**(c) タスク単位の wall-clock 比は n=1 では測定になっていない。** 同一モデル・同一スタックでの自己再現比は中央値 0.84 だが、レンジは **0.28×〜2.59×**。`async-race` は 348s→902s(turns 14→32)、`breaking-upgrade` は 639s→177s(turns 39→16)と、同じ問題に対して**エージェントの解法パス長そのものが run ごとに倍半分で振れる**。したがって前節の「`type-repair` 0.19×」「唯一の退行 `perf-fix` 2.57×」といった個別タスクの倍率は、**モデル差ではなくパスの運を測っていた**可能性が高い(実際 `perf-fix` は同日A1が24sで解いたため、同日比では 4.71× の退行になる)。集計量が安定する一方で個別タスクが安定しないのは、20本の部分独立なノイズが相殺されるためで、**タスク単位の主張には `--repeat N` が必須**。
+
+**(d) 2.10× の内訳は「思考の短さ」。** 加重平均で分解すると、decode 時間は A1 1,442s→Ornith 875s(0.61×)で、その内訳は**生成トークン数 0.66× × スループット 1.09×**——つまり**速度の大半はトークンを吐かないことから来ており、生の推論速度差は9%に過ぎない**。実際、思考量は A1 が 981字/回・総計271,676字なのに対し Ornith は 369字/回・総計81,986字(2.7倍の差)。さらに **A1 は全277回のモデル呼び出しのうち24回(8.7%)が thinking watchdog(6000字)で中断**されており、この中断分は時間だけ消費してトークンとして計上されない。Ornith の中断は222回中4回(1.8%)。prefill+decode で説明できる時間は A1 が実測wallの71%どまり、Ornith は89%で、**A1 の説明不能残差(約720秒)の主因はこの「打ち切られた思考」**とみられる。MoE アーキテクチャの差ではなく、**過剰思考の有無**が効いている。
+
+### 未計測6タスクの同一run対照 (`--run-id extra6`、2アームインターリーブ)
+
+既存20本が飽和していたため、harness で走らせられる残り6タスクを **同一run内で2アームをタスク単位に交互実行**して測った(`--arms harness-a1,harness-ornith --order-seed 20260902`)。ここで初めて品質差が出た。
+
+| task | Agents-A1 | Ornith-1.5 |
+|---|---|---|
+| think-runaway | PASS 245s (12 turns) | **PASS 115s** (11 turns) |
+| mass-migration | **FAIL 664s** `max_iterations` (61 turns) | **PASS 90s** (12 turns) |
+| incident-analysis | **FAIL 83s** (内容不足) | **PASS 155s** (7 turns) |
+| data-analysis | **FAIL 270s** (パス誤り) | **PASS 122s** (6 turns) |
+| requirements-synthesis | **FAIL 48s** (パス誤り) | **PASS 107s** (12 turns) |
+| config-audit | **FAIL 48s** (パス誤り) | **PASS 50s** (6 turns) |
+| **合計** | **1/6 PASS / 1,358s** | **6/6 PASS / 639s** |
+
+**ただし A1 の FAIL 5件を「分析能力の差」と読んではいけない。** 内訳は3種類に分かれる。
+
+1. **同一根因のパス誤り3件。** `config-audit`→`deploy/AUDIT.md`、`data-analysis`→`data/ANALYSIS.md`、`requirements-synthesis`→`briefs/DECISION.md`。A1 は**成果物を作業ディレクトリ直下ではなく入力ファイルの隣のサブディレクトリに置く**癖があり、verify が直下を見るため3件まとめて落ちた。中身は作れている(config-audit は `finding_count: 4` と所定フォーマットまで正しく生成済み)。しかも `config-audit` は「`deploy/` 以下は変更禁止」という明示制約にも同時に違反している。**これは分析の失敗ではなく指示追従(出力先とガード制約)の失敗**であり、システムプロンプト側の一文で消える可能性がある。なお該当3タスクのプロンプトは出力ファイル名をパス指定なしで書いており、fixture 側もパス規約に厳しい。
+2. **内容不足1件。** `incident-analysis` は `AUDIT`/`ANALYSIS` 系と違いファイルは作られたが、`recovery` / `failed_requests` / evidence>=3 / action>=2 のチェックに落ちた。これは素の品質差。
+3. **打ち切り1件。** `mass-migration`(40ファイル46箇所の重量級移行)で A1 は 61 turns で `max_iterations` に達し、verify も構文エラーで落ちた。Ornith は 12 turns / 90s で通した。**7.4倍の差**であり、機械的な大量移行という委譲の主用途で最も効く差。
+
+`think-runaway`(思考暴走狙いの fixture)は**両者 PASS**。reasoning model である Ornith がここで崩れる懸念は否定された(115s / 245s と速度差のみ)。
+
+またこの4本の非コーディング fixture は **harness アームでの実測が初**で、Ornith が 4/4 通したことで「fixture が harness で解けない」可能性は排除できた。A1 が落ちたのはモデル側の挙動である。
+
+### 結論
+
+**Ornith-1.5-35B-A3B は現行20タスクで Agents-A1 と品質同等(両者 20/20)、同日対照で wall-clock 2.10倍高速。**速度が主要因である現行の委譲設計において、**デフォルト `LH_MODEL` の切り替え候補として現時点で最も有力**。VRAM も 22GB で Agents-A1(22.1GB)とほぼ同じ、64GB 機に問題なく載る。
+
+**品質差も初めて観測された**が、その大半は指示追従(出力先パス)と重量級タスクの打ち切りであり、分析能力そのものの差として確認できたのは `incident-analysis` の1件だけである(上節)。
+
+そして**既存20タスクについて主張できるのは速度だけ**である。同日対照で判明したとおり(上節 b)、トークン効率の差は A1 自身の run 間ばらつきの内側に収まり、本ラウンドの n=1 では確立できていない。速度優位の実体も MoE アーキテクチャではなく**思考量の少なさ**(2.7倍差、watchdog中断率 8.7%→1.8%)であり、生の推論スループット差は9%にすぎない(上節 d)。裏を返せば、**A1 側の thinking budget を調整するだけで差が縮む可能性**があり、これは未検証。
+
+**ただし 2.29× という数字を信用する前に、本ラウンドの測定設計そのものに以下の穴がある。**
+
+**(0) n=1 であり、速度主張の protocol として本レポートの前例より弱い。** Agents-A1 ラウンドは速度パスを「代表4タスク × n=3」で測ってから品質パス n=1 に進んでいるのに対し、本ラウンドは n=1 のみ。**同日対照(上節 c)で、同一モデルの自己再現比が 0.28×〜2.59× に振れることが実測された**ので、この弱さは机上の懸念ではなく確認済みの欠陥である。集計量(20タスク合計)は ±8% に収まるため 2.10× という総和の主張は保つが、**タスク単位の倍率と p95 は `--repeat N` を回すまで一切主張できない**。委譲アームでは呼び出し元が `lh -p` でブロックするため、本来は中央値より tail が効く。
+
+**(0b) 同日・同スタックの対照(実施済み)。** ハーネスのソースは baseline 捕捉日(2026-07-21)以降 `src/` に変更が無く(`git log --since=2026-07-20 -- src/` は当日の3コミットのみ)、コード差分は交絡していない。一方 A1 baseline JSON は旧スキーマで `run`/`environment` ブロックを持たず、当時の Ollama バージョン・digest・daemon フラグが機械可読な形で残っていなかった。**この穴は `--run-id a1-recheck` の同日再測定で塞いだ**(上節)——環境ドリフトは総和 −8.2% と小さく、速度結論は生き残った代わりに、トークン効率の主張が崩れた。
+
+**(1) 品質は天井に張り付いており分離できていない。** 両モデルが20/20を通す n=1 スイートでは accuracy の差は原理的に出ない。「精度がどう変わるか」の判定にはより難しい fixture か `--repeat N` による分散込み比較が必要で、Agents-A1 との品質同等は「このスイートで差が出ない」以上を意味しない。**(2) 差が出そうなタスクを構造的に外していた(実施済み)。** baseline 比較のために20タスクに揃えた結果、残り6タスクが未実行のままだった。**この穴は `--run-id extra6` の2アーム同一run対照で塞いだ**(上節)——予測どおり判別力はそちら側にあり、A1 1/6 vs Ornith 6/6 という初の品質差が出た。残る未計測は scout/research 前処理アーム、`claude-delegate` アームでの上位コスト削減、vision capability も未計測(委譲アームは completion/turn −30% が上位への返却量に効く可能性があるため測る価値がある)。
+
+**(2b) このスイートの形が Ornith に有利である可能性を否定できない。** カードによれば Ornith-1.5 の self-improvement ループは**タスク生成と scaffold 構築自体を最適化対象に含み**、Terminal-Bench を Claude Code ハーネスで回した数値を主要指標として掲げている。つまり「小さなリポジトリを読み・編集し・テストコマンドで検証する」ループそのものが訓練分布に近い。本スイートの fixture はまさにその形をしている。汚染の証拠ではないが、**この 2.29× と 20/20 が実リポジトリでの作業にそのまま転移する保証はない**という留保にはなる。**(3) presence_penalty 1.0 はカード未指定の値。** ハーネス既定が当たっているだけで、Ornith 向けに検証された値ではない。0 との比較は未実施。
+
+デフォルト化する場合は `src/config.ts` に `ornith` 専用 profile を追加すること。現状は `MODEL_PROFILES` のどのパターンにも当たらず `DEFAULT_PROFILE`(=`QWEN_PROFILE`)にフォールバックしており、**偶然カードの推奨値と一致しているだけ**で、QWEN_PROFILE 側を将来触ると黙って推奨外の設定に移る。実測値は `eval/baselines/ornith15-35b-a3b.json` に保存済み。

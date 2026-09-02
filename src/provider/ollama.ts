@@ -88,7 +88,7 @@ export async function fetchRunnerSnapshot(baseUrl: string, timeoutMs = 2000): Pr
   }
 }
 
-/** Strip harness-internal fields (underscore-prefixed) before sending. */
+/** Strip LocalRig-internal fields (underscore-prefixed) before sending. */
 function wireMessage(m: ChatMessage): Record<string, unknown> {
   const out: Record<string, unknown> = { role: m.role, content: m.content };
   if (m.tool_calls) out.tool_calls = m.tool_calls;

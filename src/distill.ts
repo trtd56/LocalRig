@@ -25,7 +25,7 @@ export interface DistillChunk {
   sources: DistillSource[];
   text: string;
   estimatedTokens: number;
-  /** Harness-recorded input truncations for this chunk. */
+  /** LocalRig-recorded input truncations for this chunk. */
   omitted?: string[];
 }
 
@@ -216,7 +216,7 @@ export function planChunks(
         }
         const source = { ...oneLine, text: line.slice(0, low) };
         pushSource(source, [
-          `${input.file}:${start + 1} was truncated by the harness because the single line exceeded the chunk token budget`,
+          `${input.file}:${start + 1} was truncated by LocalRig because the single line exceeded the chunk token budget`,
         ]);
         flush();
         start++;
@@ -319,7 +319,7 @@ export function parseDigest(text: string): ParseDigestResult {
         not_found: parsed.not_found,
         citations,
         omitted,
-        // This is a harness measurement. Never trust a model-supplied value.
+        // This is a LocalRig measurement. Never trust a model-supplied value.
         citations_dropped: 0,
       },
     };
@@ -492,7 +492,7 @@ function fitReduceDigest(request: DistillRequest, digest: Digest, deps: DistillD
   }
 
   const truncationNote =
-    "partial answers were truncated by the harness before reduce to fit num_ctx; citations were preserved";
+    "partial answers were truncated by LocalRig before reduce to fit num_ctx; citations were preserved";
   const omitted = digest.omitted.includes(truncationNote)
     ? [...digest.omitted]
     : [...digest.omitted, truncationNote];

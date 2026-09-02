@@ -29,7 +29,7 @@ export interface IsolationHandle {
   baselineTree: string;
   baseline: WorkspaceFingerprint;
   baselineModes: Record<string, number>;
-  /** Harness-owned paths inside the repository excluded from parent snapshots. */
+  /** LocalRig-owned paths inside the repository excluded from parent snapshots. */
   parentExcluded: string[];
 }
 

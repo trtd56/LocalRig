@@ -26,7 +26,7 @@ lh feedback "$SESSION_ID" pass --notes "検証内容"
 |---|---|
 | [Bun](https://bun.sh) ≥ 1.2 | `bun --version` |
 | [Ollama](https://ollama.com) 起動中 | `curl -s localhost:11434/api/version` |
-| tools 対応モデル(既定: `qwen36-27b-mtp:latest`) | `ollama list` |
+| tools 対応モデル(既定: `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M`、22GB) | `ollama list` |
 | `localrig` / `lh` コマンド | `which localrig` または `which lh`(なければ下記) |
 
 `localrig` / `lh` が未登録なら、このリポジトリで:
@@ -82,10 +82,23 @@ lh stats --by-kind --caller claude-code --hardware mac-m4-64gb --json
 
 ### 2-1. スキルのインストール
 
-3 つの方法から選ぶ:
+**インストーラを使うのが最短**(前提条件チェック付き):
 
 ```sh
-# A. ユーザースキル(全プロジェクトで有効) — 推奨
+./integrations/claude-code/install-skill.sh /path/to/project  # プロジェクトに設置
+./integrations/claude-code/install-skill.sh --user            # 全プロジェクトで有効
+./integrations/claude-code/install-skill.sh                   # カレントディレクトリ
+```
+
+`SKILL.md` は毎回上書き更新され、`PROJECT.md`(後述のプロジェクト別プロファイル)は
+**存在しない場合だけ**テンプレートから作られる。記入済みプロファイルは再インストールで
+壊れないので、スキル本体の更新は同じコマンドを流すだけでよい。実行後に `lh` / Ollama /
+既定モデルの3点を検査し、揃っていなければ非ゼロ終了する。
+
+手動で置く場合は3つの方法から選ぶ:
+
+```sh
+# A. ユーザースキル(全プロジェクトで有効)
 cp -r integrations/claude-code/delegate-local ~/.claude/skills/
 
 # B. シンボリックリンク(このリポジトリでの編集が即反映される。開発中はこちら)

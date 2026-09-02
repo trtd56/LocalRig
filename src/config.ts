@@ -67,7 +67,7 @@ const QWEN_PROFILE: ModelProfile = {
 };
 
 // Gemma 4 26B (Ollama) defaults observed from the Modelfile: 1 / 0.95 / 64.
-// Keep repetition penalties neutral; the full harness run used these values.
+// Keep repetition penalties neutral; the full eval run used these values.
 const GEMMA_PROFILE: ModelProfile = {
   temperature: 1,
   topP: 0.95,
@@ -87,8 +87,24 @@ const AGENTS_A1_PROFILE: ModelProfile = {
   thinkBudgetChars: 6000,
 };
 
+// Ornith-1.5-35B-A3B (35.5B qwen35moe MoE, ~3B active). HF card recommends
+// 0.6 / 0.95 / 20 for general tasks. The card and the Ollama Modelfile both
+// leave presence_penalty unspecified, so this pins the 1.0 the model was
+// actually measured with (it inherited QWEN_PROFILE's value on the eval run —
+// see eval/REPORT.md "Ornith-1.5-35B-A3B 比較ラウンド"). Pinning matters
+// because the name matches no other pattern: without this entry it falls back
+// to QWEN_PROFILE and silently drifts if that profile is ever retuned.
+const ORNITH_PROFILE: ModelProfile = {
+  temperature: 0.6,
+  topP: 0.95,
+  topK: 20,
+  presencePenalty: 1.0,
+  thinkBudgetChars: 6000,
+};
+
 // Model name (case-insensitive substring) → profile. First match wins.
 const MODEL_PROFILES: { pattern: string; profile: ModelProfile }[] = [
+  { pattern: "ornith", profile: ORNITH_PROFILE },
   { pattern: "agents-a1", profile: AGENTS_A1_PROFILE },
   { pattern: "qwen", profile: QWEN_PROFILE },
   { pattern: "gemma", profile: GEMMA_PROFILE },
@@ -147,10 +163,21 @@ export function parseThinkByKind(value: string | undefined): Record<string, bool
   return result;
 }
 
-// Default switched from qwen36-27b-mtp on 2026-07-21: Agents-A1 measured
-// 20/20 PASS on the eval suite at ~2.7-3.6x lower wall-clock (see
-// eval/REPORT.md "Agents-A1 比較ラウンド" and eval/baselines/agents-a1-35b-q4km.json).
-const resolvedModel = process.env.LH_MODEL ?? "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M";
+// Default switched from Agents-A1 on 2026-09-02. Measured same-day on one
+// stack (Ollama 0.32.15, dedicated daemon, M3 Max 64GB, n=1) across all 26
+// localrig-runnable tasks: Ornith 26/26 PASS / 1,849s vs Agents-A1 21/26 /
+// 3,897s — 2.11x faster with zero regressions (no task A1 passed that Ornith
+// failed). See eval/REPORT.md "Ornith-1.5-35B-A3B 比較ラウンド" plus its
+// same-day-control and extra6 sections.
+//
+// What that evidence does NOT cover, before you lean on it: n=1 throughout, so
+// per-task wall-clock ratios are noise (the same model re-running itself swings
+// 0.28x-2.59x per task); the token-efficiency delta sits inside that noise; and
+// the claude-delegate arm was never re-measured on this model.
+//
+// Rollback is one env var: LH_MODEL=hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M
+// (baselines for both are committed under eval/baselines/).
+const resolvedModel = process.env.LH_MODEL ?? "hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M";
 const profile = resolveProfile(resolvedModel);
 
 export const defaultConfig: Config = {

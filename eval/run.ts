@@ -1,11 +1,11 @@
 #!/usr/bin/env bun
-// Eval runner: executes each task with an agent (this harness or claude CLI as
+// Eval runner: executes each task with an agent (LocalRig itself or claude CLI as
 // baseline), then verifies with the task's test command.
 //
-//   bun run eval/run.ts --agent harness            # all tasks via local harness
+//   bun run eval/run.ts --agent localrig           # all tasks via LocalRig
 //   bun run eval/run.ts --agent claude             # baseline via claude CLI
-//   bun run eval/run.ts --agent harness --task fix-bug,refactor
-//   bun run eval/run.ts --agent harness --keep     # keep workdirs for inspection
+//   bun run eval/run.ts --agent localrig --task fix-bug,refactor
+//   bun run eval/run.ts --agent localrig --keep    # keep workdirs for inspection
 //   bun run eval/run.ts --agent claude-scout --task scout-locate --run-id p2-r1
 //   bun run eval/run.ts --arms claude,claude-delegate --task fix-bug --repeat 3 --run-id ci --order-seed 42
 //
@@ -52,7 +52,7 @@ const LH_HOME_ROOT = path.join(RESULTS_DIR, "lh-home");
 // are copied here before the workdir is deleted, so worker cost/quality survives.
 const DELEGATE_WORKERS_ROOT = path.join(RESULTS_DIR, "delegate-workers");
 const SUPPORTED_AGENTS = new Set([
-  "harness",
+  "localrig",
   "claude",
   "claude-delegate",
   "claude-delegate-batchcli",
@@ -64,35 +64,35 @@ const SUPPORTED_AGENTS = new Set([
   "claude-research",
 ]);
 
-interface HarnessArmConfig { root?: string; env?: Record<string, string>; }
-const HARNESS_ARMS = (() => {
-  const raw = process.env.LH_EVAL_HARNESS_ARMS;
-  if (!raw) return new Map<string, HarnessArmConfig>();
-  const parsed = JSON.parse(raw) as Record<string, HarnessArmConfig>;
-  const entries: Array<[string, HarnessArmConfig]> = [];
+interface LocalrigArmConfig { root?: string; env?: Record<string, string>; }
+const LOCALRIG_ARMS = (() => {
+  const raw = process.env.LH_EVAL_LOCALRIG_ARMS;
+  if (!raw) return new Map<string, LocalrigArmConfig>();
+  const parsed = JSON.parse(raw) as Record<string, LocalrigArmConfig>;
+  const entries: Array<[string, LocalrigArmConfig]> = [];
   for (const [name, config] of Object.entries(parsed)) {
-    if (!/^harness-[A-Za-z0-9_-]+$/.test(name) || !config || typeof config !== "object") {
-      throw new Error(`invalid LH_EVAL_HARNESS_ARMS entry: ${name}`);
+    if (!/^localrig-[A-Za-z0-9_-]+$/.test(name) || !config || typeof config !== "object") {
+      throw new Error(`invalid LH_EVAL_LOCALRIG_ARMS entry: ${name}`);
     }
     if (config.env && Object.values(config.env).some((value) => typeof value !== "string")) {
-      throw new Error(`invalid env values for harness arm: ${name}`);
+      throw new Error(`invalid env values for localrig arm: ${name}`);
     }
     entries.push([name, config]);
   }
   return new Map(entries);
 })();
 
-function isHarnessArm(agent: string): boolean {
-  return agent === "harness" || HARNESS_ARMS.has(agent);
+function isLocalrigArm(agent: string): boolean {
+  return agent === "localrig" || LOCALRIG_ARMS.has(agent);
 }
 
-function harnessArm(agent: string): HarnessArmConfig {
-  return HARNESS_ARMS.get(agent) ?? {};
+function localrigArm(agent: string): LocalrigArmConfig {
+  return LOCALRIG_ARMS.get(agent) ?? {};
 }
 // Claude Code writes each session's transcript to
 // ~/.claude/projects/<slug>/<session-id>.jsonl, where <slug> is the run's cwd
 // with every non-[A-Za-z0-9-] char replaced by '-' (verified against real dirs:
-// /Users/s06330/Development/localllm_harnes → -Users-s06330-Development-localllm-harnes,
+// /Users/s06330/Development/LocalRig → -Users-s06330-Development-LocalRig,
 // i.e. '/' and '_' both map to '-', existing '-' preserved, no collapsing). Used
 // as a mechanical backup to count worker sessions for the haiku arm.
 const CLAUDE_PROJECTS_DIR = path.join(os.homedir(), ".claude", "projects");
@@ -156,7 +156,7 @@ Do not call lh -p or lh batch for this arm. Scout is read-only; you may still ma
 
 /**
  * System-prompt append for the `claude-research` preprocessing arm. Search and
- * page fetching remain harness-owned; the local model only selects and
+ * page fetching remain LocalRig-owned; the local model only selects and
  * compresses the fetched snapshots. This keeps the task prompt identical to
  * baseline while making use of a kind=research session mechanically visible.
  */
@@ -347,7 +347,7 @@ interface TaskResult {
   agent: string;
   /**
    * Which model actually ran this task: `LH_MODEL`/defaultConfig.model for the
-   * harness arm, or the `--model` value passed to the `claude` CLI orchestrator
+   * localrig arm, or the `--model` value passed to the `claude` CLI orchestrator
    * for every `claude`-family arm (see CLAUDE_ORCHESTRATOR_MODEL). Lets a
    * summary survive a model upgrade without silently mixing runs from two
    * models under one file — see eval/baselines/ and compare-baseline.ts.
@@ -363,7 +363,7 @@ interface TaskResult {
   // extractStructuredMetrics). All optional: undefined/omitted whenever the
   // agent has no equivalent data (e.g. `claude` has no per-tool-call count,
   // see agentCommand) or the JSON couldn't be parsed.
-  /** RunStatus string for the harness (see src/types.ts); not populated for claude. */
+  /** RunStatus string for LocalRig (see src/types.ts); not populated for claude. */
   status?: string;
   promptTokens?: number;
   completionTokens?: number;
@@ -371,7 +371,7 @@ interface TaskResult {
   toolCalls?: number;
   prefillTps?: number;
   decodeTps?: number;
-  /** ErrorKind string (see src/types.ts); harness only emits this if/when its --json output grows an error_kind field. */
+  /** ErrorKind string (see src/types.ts); LocalRig only emits this if/when its --json output grows an error_kind field. */
   errorKind?: string;
   /** Dollar cost of the run (claude/claude-delegate only, from total_cost_usd). */
   costUsd?: number;
@@ -496,7 +496,7 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
   const asRecord = (v: unknown): Record<string, unknown> | undefined =>
     typeof v === "object" && v !== null ? (v as Record<string, unknown>) : undefined;
 
-  if (isHarnessArm(agent)) {
+  if (isLocalrigArm(agent)) {
     // v2 reports total prompt/completion usage across every turn. Fall back to
     // the v1 aliases when analysing archived result files.
     const tokens = asRecord(obj.tokens);
@@ -557,9 +557,9 @@ function extractStructuredMetrics(agent: string, taskName: string, stdout: strin
 }
 
 function agentCommand(agent: string, prompt: string): { cmd: string; args: string[] } {
-  if (isHarnessArm(agent)) {
-    const harnessRoot = path.resolve(harnessArm(agent).root ?? ROOT);
-    // --max-time makes the harness wrap up gracefully before the runner's
+  if (isLocalrigArm(agent)) {
+    const localrigRoot = path.resolve(localrigArm(agent).root ?? ROOT);
+    // --max-time makes LocalRig wrap up gracefully before the runner's
     // 30-min SIGKILL, which becomes a backstop rather than the primary limit.
     // -v and --json together: per src/index.ts runOneShot(), showProgress =
     // opts.json ? opts.verbose : !opts.quiet, and the progress renderer
@@ -571,7 +571,7 @@ function agentCommand(agent: string, prompt: string): { cmd: string; args: strin
       cmd: "bun",
       // Eval fixtures are disposable temp-directory copies, not Git repositories.
       // Run directly inside that copy instead of requiring worktree isolation.
-      args: ["run", path.join(harnessRoot, "src", "index.ts"), "-p", prompt, "-v", "--json", "--in-place", "--max-time", "1500"],
+      args: ["run", path.join(localrigRoot, "src", "index.ts"), "-p", prompt, "-v", "--json", "--in-place", "--max-time", "1500"],
     };
   }
   if (isClaudeArm(agent)) {
@@ -921,7 +921,7 @@ async function runTask(
   const isPreprocess = isPreprocessArm(agent);
   const isHaiku = agent === "claude-delegate-haiku";
   const env: NodeJS.ProcessEnv = { ...process.env };
-  if (isHarnessArm(agent)) Object.assign(env, harnessArm(agent).env ?? {});
+  if (isLocalrigArm(agent)) Object.assign(env, localrigArm(agent).env ?? {});
   let lhHome: string | undefined;
   if (isDelegate || isPreprocess) {
     // Suffix keeps arms from sharing an LH_HOME (claude-delegate → <task>,
@@ -936,7 +936,7 @@ async function runTask(
     env.BASH_DEFAULT_TIMEOUT_MS = "2100000";
   }
 
-  const model = isHarnessArm(agent) ? (env.LH_MODEL ?? defaultConfig.model) : CLAUDE_ORCHESTRATOR_MODEL;
+  const model = isLocalrigArm(agent) ? (env.LH_MODEL ?? defaultConfig.model) : CLAUDE_ORCHESTRATOR_MODEL;
   console.log(`\n=== [${agent}] ${spec.name} — workdir ${workdir} ===`);
   const { cmd, args } = agentCommand(agent, spec.prompt);
   const timeoutMs = isDelegate ? DELEGATE_TASK_TIMEOUT_MS : TASK_TIMEOUT_MS;
@@ -1038,7 +1038,7 @@ async function main() {
     console.error(error instanceof Error ? error.message : String(error));
     process.exit(2);
   }
-  const unsupportedAgents = options.agents.filter((agent) => !SUPPORTED_AGENTS.has(agent) && !isHarnessArm(agent));
+  const unsupportedAgents = options.agents.filter((agent) => !SUPPORTED_AGENTS.has(agent) && !isLocalrigArm(agent));
   if (unsupportedAgents.length > 0) {
     console.error(`unknown agent: ${unsupportedAgents.join(", ")}`);
     process.exit(2);
@@ -1062,15 +1062,15 @@ async function main() {
   const environmentByAgent = new Map<string, ReturnType<typeof captureEnvironmentMetadata>>();
   for (const agent of options.agents) {
     const metadataModel =
-      isHarnessArm(agent) || (isDelegateArm(agent) && agent !== "claude-delegate-haiku") || isPreprocessArm(agent)
-        ? (harnessArm(agent).env?.LH_MODEL ?? process.env.LH_MODEL ?? defaultConfig.model)
+      isLocalrigArm(agent) || (isDelegateArm(agent) && agent !== "claude-delegate-haiku") || isPreprocessArm(agent)
+        ? (localrigArm(agent).env?.LH_MODEL ?? process.env.LH_MODEL ?? defaultConfig.model)
         : CLAUDE_ORCHESTRATOR_MODEL;
-    environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, path.resolve(harnessArm(agent).root ?? ROOT)));
+    environmentByAgent.set(agent, captureEnvironmentMetadata(agent, metadataModel, path.resolve(localrigArm(agent).root ?? ROOT)));
   }
 
   const extraWatchUrls = (process.env.LH_EVAL_WATCH_URLS ?? "").split(",").map((url) => url.trim()).filter(Boolean);
   const evaluationUrls = [...new Set(options.agents.map((agent) =>
-    harnessArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl,
+    localrigArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl,
   ))];
   const watchUrls = [...new Set([
     ...evaluationUrls,
@@ -1114,7 +1114,7 @@ async function main() {
           result = await runTask(agent, path.join(TASKS_DIR, t), keep, runMetadata);
           const boundaryEntries: WatchEntry[] = [runMetadata.runners?.before, runMetadata.runners?.after]
             .filter((snapshot): snapshot is NonNullable<typeof snapshot> => snapshot !== undefined)
-            .map((snapshot) => ({ url: harnessArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl, ...snapshot }));
+            .map((snapshot) => ({ url: localrigArm(agent).env?.OLLAMA_HOST ?? process.env.OLLAMA_HOST ?? defaultConfig.ollamaUrl, ...snapshot }));
           const startMs = Date.parse(runMetadata.startedAt ?? "");
           const endMs = Date.parse(runMetadata.endedAt ?? "");
           const allEntries = [...watcher.entries, ...boundaryEntries];
