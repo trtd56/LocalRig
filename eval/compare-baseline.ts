@@ -1,9 +1,9 @@
 #!/usr/bin/env bun
 // Compares a saved baseline summary against a current summary run, so a model
-// upgrade (or any other change to the harness) can be checked for regressions
+// upgrade (or any other change to LocalRig) can be checked for regressions
 // before it's trusted.
 //
-//   bun run eval/compare-baseline.ts --baseline eval/baselines/qwen36-27b-mtp.json --summary eval/results/summary-harness.json
+//   bun run eval/compare-baseline.ts --baseline eval/baselines/ornith15-35b-a3b.json --summary eval/results/summary-localrig.json
 //
 // The baseline file is the {model, capturedAt, note, results: [...]} wrapper
 // written by hand (see eval/baselines/), while the summary file is the plain

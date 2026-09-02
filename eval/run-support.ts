@@ -78,7 +78,7 @@ export interface RunMetadata {
 export const MAX_REPEAT = 1_000;
 
 export function parseRunArgs(argv: string[]): RunOptions {
-  let agents = ["harness"];
+  let agents = ["localrig"];
   let only: Set<string> | undefined;
   let keep = false;
   let runId: string | undefined;
@@ -311,7 +311,7 @@ export function captureEnvironmentMetadata(agent: string, model: string, cwd: st
   const claudeVersion = command("claude", ["--version"], cwd);
   const bunVersion = command("bun", ["--version"], cwd);
   const localModel =
-    agent === "harness" ||
+    agent === "localrig" ||
     (agent.startsWith("claude-delegate") && agent !== "claude-delegate-haiku") ||
     agent === "claude-scout" ||
     agent === "claude-research";

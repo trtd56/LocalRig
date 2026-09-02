@@ -12,7 +12,7 @@ Ollama 上のローカル LLM(既定: Qwen 3.6 27B MTP)を Claude Code 級のコ
 ## 必要環境
 
 - [Bun](https://bun.sh) ≥ 1.2(CLI/shebang・install・testに必須。packageのNode互換targetは≥24だが、Node単体起動は非対応)
-- [Ollama](https://ollama.com)(既定モデル: `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M`。`ollama pull hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` で取得。他の tools 対応モデルは `LH_MODEL` / `--model` で指定)
+- [Ollama](https://ollama.com)(既定モデル: `hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M`。`ollama pull hf.co/ornith-ai/Ornith-1.5-35B-A3B-GGUF:Q4_K_M` で取得。22GB。他の tools 対応モデルは `LH_MODEL` / `--model` で指定。旧既定 `hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:Q4_K_M` に戻す場合も `LH_MODEL` のみ)
 
 ## インストール
 
@@ -299,7 +299,7 @@ Claude Code から `lh` へ委譲して Claude 側の API コストが実際に�
 
 ```sh
 bun test                             # ユニットテスト
-bun run eval/run.ts --agent harness  # 本ハーネス + ローカルモデルで評価タスク実行
+bun run eval/run.ts --agent localrig  # LocalRig + ローカルモデルで評価タスク実行
 bun run eval/run.ts --agent claude   # Claude Code (sonnet) ベースライン
 
 # 複数armをseed付き順序で3反復し、run metadataを分離保存

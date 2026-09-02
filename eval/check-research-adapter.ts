@@ -66,7 +66,7 @@ function fakeComplete(messages: ChatMessage[], _options: ChatRequestOptions): Pr
   if (codenameUrl && all.includes(PLANTED_FACTS.codename)) citations.push(citation(codenameUrl, PLANTED_FACTS.codename));
   if (networkUrl && all.includes(PLANTED_FACTS.port)) citations.push(citation(networkUrl, PLANTED_FACTS.port));
   if (reliabilityUrl && all.includes(PLANTED_FACTS.retries)) citations.push(citation(reliabilityUrl, PLANTED_FACTS.retries));
-  // Deliberately fabricated: the harness must drop it during snapshot verification.
+  // Deliberately fabricated: LocalRig must drop it during snapshot verification.
   if (urls[0]) citations.push(citation(urls[0], "fabricated quote that is absent from every snapshot"));
 
   const answer = [PLANTED_FACTS.codename, PLANTED_FACTS.port, PLANTED_FACTS.retries].join(" ");

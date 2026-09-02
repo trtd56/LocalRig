@@ -71,7 +71,7 @@ export interface GateThresholds {
   maxQualityDrop: number;
   minUpperCostSavingsUsd: number;
   maxP95WallSec: number;
-  /** Harness-vs-harness comparisons have no billed upper-level cost. */
+  /** LocalRig-vs-LocalRig comparisons have no billed upper-level cost. */
   skipCost?: boolean;
 }
 

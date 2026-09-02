@@ -34,7 +34,7 @@ const THINKING_INTERRUPT_NUDGE =
 
 const BAD_TOOL_CALL_NUDGE =
   "[system] Your last tool call never executed: the server rejected its JSON arguments as malformed " +
-  "or truncated before they reached the harness. Re-issue the call with valid JSON. If you were " +
+  "or truncated before they reached LocalRig. Re-issue the call with valid JSON. If you were " +
   "writing a large file, split the content across several smaller write/edit calls.";
 
 /**
